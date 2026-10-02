@@ -363,6 +363,13 @@ async def dashboard():
                     <div class="endpoint">/api/stream/{id}/captions</div>
                     <a href="/api/stream/6207982430134357800/captions?detail_path=breaking-bad-ej6Bp0MCAo7" target="_blank" class="btn">Retrive Subs</a>
                 </div>
+
+                <div class="card">
+                    <div class="card-title"><i>⚡</i> Direct Stream by Name</div>
+                    <p class="card-desc">Stream any anime or show directly by title! Automatically searches, extracts MP4 streams, and includes multi-language subtitles in one request.</p>
+                    <div class="endpoint">/api/stream-by-name?title=Demon Slayer&se=1&ep=1</div>
+                    <a href="/api/stream-by-name?title=Demon Slayer&se=1&ep=1" target="_blank" class="btn">Stream by Title</a>
+                </div>
             </div>
 
             <footer>
@@ -551,6 +558,58 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
     inner = data.get("data", {})
     captions = inner.get("captions", []) if isinstance(inner, dict) else inner
     return {"subject_id": subject_id, "se": se, "ep": ep, "count": len(captions), "captions": captions}
+
+@app.get("/api/stream-by-name")
+async def get_stream_by_name(
+    title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Naruto, Demon Slayer)"),
+    se: int = Query(1, description="Season number"),
+    ep: int = Query(1, description="Episode number"),
+    include_captions: bool = Query(True, description="Whether to include subtitle caption URLs")
+):
+    # Step 1: Search for the title
+    search_url = f"{API_BASE}/subject/search"
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
+    inner = search_res.get("data", {})
+    raw = inner.get("items", inner.get("list", []))
+
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
+
+    top_match = raw[0]
+    sub = top_match.get("subject") or top_match
+    subject_id = str(sub.get("subjectId"))
+    detail_path = str(sub.get("detailPath"))
+    matched_title = sub.get("title") or top_match.get("title") or title
+
+    # Step 2: Fetch stream resources
+    stream_res = await get_stream_sources(subject_id=subject_id, detail_path=detail_path, se=se, ep=ep)
+
+    # Step 3: Fetch captions if requested
+    captions = []
+    if include_captions:
+        try:
+            caption_res = await get_captions(subject_id=subject_id, detail_path=detail_path, se=se, ep=ep)
+            captions = caption_res.get("captions", [])
+        except Exception:
+            captions = []
+
+    return {
+        "query_title": title,
+        "matched_title": matched_title,
+        "subject_id": subject_id,
+        "detail_path": detail_path,
+        "se": se,
+        "ep": ep,
+        "has_resource": stream_res.get("has_resource", False),
+        "sources": stream_res.get("sources", []),
+        "hls": stream_res.get("hls", []),
+        "dash": stream_res.get("dash", []),
+        "free_episodes": stream_res.get("free_episodes"),
+        "limited": stream_res.get("limited", False),
+        "captions_count": len(captions),
+        "captions": captions,
+        "note": stream_res.get("note")
+    }
 
 if __name__ == "__main__":
     import uvicorn
