@@ -370,6 +370,13 @@ async def dashboard():
                     <div class="endpoint">/api/stream-by-name?title=Demon Slayer&se=1&ep=1</div>
                     <a href="/api/stream-by-name?title=Demon Slayer&se=1&ep=1" target="_blank" class="btn">Stream by Title</a>
                 </div>
+
+                <div class="card">
+                    <div class="card-title"><i>🌐</i> Unified Multi-Audio Stream</div>
+                    <p class="card-desc">Automatically detects all available audio dubs (Japanese, English Dub, Hindi Dub, etc.) and returns stream qualities for each language in one response!</p>
+                    <div class="endpoint">/api/stream-all-languages?title=Demon Slayer&se=1&ep=1</div>
+                    <a href="/api/stream-all-languages?title=Demon Slayer&se=1&ep=1" target="_blank" class="btn">All Languages</a>
+                </div>
             </div>
 
             <footer>
@@ -597,6 +604,81 @@ async def get_stream_by_name(
         "free_episodes": stream_res.get("free_episodes"),
         "limited": stream_res.get("limited", False),
         "note": stream_res.get("note")
+    }
+
+@app.get("/api/stream-all-languages")
+async def get_stream_all_languages(
+    title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Demon Slayer, Naruto)"),
+    se: int = Query(1, description="Season number"),
+    ep: int = Query(1, description="Episode number")
+):
+    # Step 1: Search for the title
+    search_url = f"{API_BASE}/subject/search"
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 15})
+    inner = search_res.get("data", {})
+    raw = inner.get("items", inner.get("list", []))
+
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
+
+    lang_map = {}
+    for item in raw:
+        sub = item.get("subject") or item
+        name = str(sub.get("title") or item.get("title") or "")
+        subject_id = str(sub.get("subjectId") or "")
+        detail_path = str(sub.get("detailPath") or "")
+
+        if not subject_id or not detail_path:
+            continue
+
+        if re.search(r'\[english\]|\benglish\b', name, re.IGNORECASE):
+            lang = "English Dub"
+        elif re.search(r'\[hindi\]|\bhindi\b', name, re.IGNORECASE):
+            lang = "Hindi Dub"
+        elif re.search(r'\[spanish\]|\bspanish\b', name, re.IGNORECASE):
+            lang = "Spanish Dub"
+        else:
+            lang = "Japanese (Original)"
+
+        if lang not in lang_map:
+            lang_map[lang] = {
+                "audio_language": lang,
+                "matched_title": name,
+                "subject_id": subject_id,
+                "detail_path": detail_path
+            }
+
+    if not lang_map:
+        raise HTTPException(status_code=404, detail=f"No playable audio streams found for '{title}'")
+
+    # Step 2: Fetch streams for all detected languages concurrently
+    tasks = [
+        get_stream_sources(subject_id=info["subject_id"], detail_path=info["detail_path"], se=se, ep=ep)
+        for info in lang_map.values()
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    audio_tracks = []
+    for info, stream_res in zip(lang_map.values(), results):
+        if isinstance(stream_res, Exception) or not isinstance(stream_res, dict):
+            continue
+        audio_tracks.append({
+            "audio_language": info["audio_language"],
+            "matched_title": info["matched_title"],
+            "subject_id": info["subject_id"],
+            "detail_path": info["detail_path"],
+            "has_resource": stream_res.get("has_resource", False),
+            "sources": stream_res.get("sources", []),
+            "hls": stream_res.get("hls", []),
+            "dash": stream_res.get("dash", [])
+        })
+
+    return {
+        "query_title": title,
+        "se": se,
+        "ep": ep,
+        "total_languages": len(audio_tracks),
+        "audio_tracks": audio_tracks
     }
 
 if __name__ == "__main__":
