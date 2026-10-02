@@ -610,83 +610,62 @@ async def get_stream_by_name(
 async def get_stream_all_languages(
     title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Demon Slayer, Naruto)"),
     se: int = Query(1, description="Season number"),
-    ep: int = Query(1, description="Episode number")
+    ep: int = Query(1, description="Episode number"),
+    dubs_only: bool = Query(True, description="Filter for audio dubs only and exclude subtitle-only tracks")
 ):
-    # Step 1: Search for the title (fetch up to 30 items to catch all language dubs)
+    # Step 1: Search for top match
     search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 30})
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
     inner = search_res.get("data", {})
     raw = inner.get("items", inner.get("list", []))
 
     if not raw:
         raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
 
+    top_match = raw[0]
+    sub = top_match.get("subject") or top_match
+    detail_path = str(sub.get("detailPath"))
+
+    # Step 2: Query MovieBox official detail endpoint to extract official 'dubs' array
+    detail_data = await _make_request(f"{API_BASE}/detail?detailPath={detail_path}")
+    sub_detail = detail_data.get("data", {}).get("subject", {})
+    official_dubs = sub_detail.get("dubs", [])
+
     lang_map = {}
-    for item in raw:
-        sub = item.get("subject") or item
-        name = str(sub.get("title") or item.get("title") or "")
-        subject_id = str(sub.get("subjectId") or "")
-        detail_path = str(sub.get("detailPath") or "")
 
-        if not subject_id or not detail_path:
-            continue
+    if official_dubs:
+        for d in official_dubs:
+            lan_name = d.get("lanName") or "Unknown"
+            lan_code = d.get("lanCode") or ""
+            sid = str(d.get("subjectId"))
+            dpath = str(d.get("detailPath"))
+            d_type = d.get("type", 0)  # 0 = Audio Dub, 1 = Subtitle track
 
-        # Classify all possible audio language dubs
-        if re.search(r'\[english\]|\benglish\b', name, re.IGNORECASE):
-            lang = "English Dub"
-        elif re.search(r'\[hindi\]|\bhindi\b', name, re.IGNORECASE):
-            lang = "Hindi Dub"
-        elif re.search(r'\[tamil\]|\btamil\b', name, re.IGNORECASE):
-            lang = "Tamil Dub"
-        elif re.search(r'\[telugu\]|\btelugu\b', name, re.IGNORECASE):
-            lang = "Telugu Dub"
-        elif re.search(r'\[malayalam\]|\bmalayalam\b', name, re.IGNORECASE):
-            lang = "Malayalam Dub"
-        elif re.search(r'\[kannada\]|\bkannada\b', name, re.IGNORECASE):
-            lang = "Kannada Dub"
-        elif re.search(r'\[spanish\]|español|\bspanish\b', name, re.IGNORECASE):
-            lang = "Spanish Dub"
-        elif re.search(r'\[french\]|français|\bfrench\b', name, re.IGNORECASE):
-            lang = "French Dub"
-        elif re.search(r'\[german\]|deutsch|\bgerman\b', name, re.IGNORECASE):
-            lang = "German Dub"
-        elif re.search(r'\[portuguese\]|português|\bportuguese\b', name, re.IGNORECASE):
-            lang = "Portuguese Dub"
-        elif re.search(r'\[italian\]|italiano|\bitalian\b', name, re.IGNORECASE):
-            lang = "Italian Dub"
-        elif re.search(r'\[indonesian\]|\bindonesian\b', name, re.IGNORECASE):
-            lang = "Indonesian Dub"
-        elif re.search(r'\[vietnamese\]|\bvietnamese\b', name, re.IGNORECASE):
-            lang = "Vietnamese Dub"
-        elif re.search(r'\[thai\]|\bthai\b', name, re.IGNORECASE):
-            lang = "Thai Dub"
-        elif re.search(r'\[tagalog\]|filipino|\btagalog\b', name, re.IGNORECASE):
-            lang = "Tagalog Dub"
-        elif re.search(r'\[arabic\]|\barabic\b', name, re.IGNORECASE):
-            lang = "Arabic Dub"
-        elif re.search(r'\[russian\]|\brussian\b', name, re.IGNORECASE):
-            lang = "Russian Dub"
-        elif re.search(r'\[chinese\]|mandarin|\bchinese\b', name, re.IGNORECASE):
-            lang = "Chinese Dub"
-        elif re.search(r'\[korean\]|\bkorean\b', name, re.IGNORECASE):
-            lang = "Korean Dub"
-        elif re.search(r'\[japanese\]|\bjapanese\b', name, re.IGNORECASE):
-            lang = "Japanese"
-        else:
-            lang = "Japanese / Original Audio"
+            # Filter out subtitle-only items if dubs_only is True
+            if dubs_only and d_type == 1:
+                continue
 
-        if lang not in lang_map:
-            lang_map[lang] = {
-                "audio_language": lang,
-                "matched_title": name,
-                "subject_id": subject_id,
-                "detail_path": detail_path
-            }
+            if sid and dpath and lan_name not in lang_map:
+                lang_map[lan_name] = {
+                    "audio_language": lan_name,
+                    "language_code": lan_code,
+                    "subject_id": sid,
+                    "detail_path": dpath,
+                    "type": "dub" if d_type == 0 else "sub"
+                }
 
+    # Fallback if no official dubs array returned
     if not lang_map:
-        raise HTTPException(status_code=404, detail=f"No playable audio streams found for '{title}'")
+        subject_id = str(sub.get("subjectId"))
+        lang_map["Original Audio"] = {
+            "audio_language": "Original Audio",
+            "language_code": "orig",
+            "subject_id": subject_id,
+            "detail_path": detail_path,
+            "type": "dub"
+        }
 
-    # Step 2: Fetch streams for all detected languages concurrently
+    # Step 3: Fetch video stream resources for all detected languages concurrently
     tasks = [
         get_stream_sources(subject_id=info["subject_id"], detail_path=info["detail_path"], se=se, ep=ep)
         for info in lang_map.values()
@@ -698,8 +677,9 @@ async def get_stream_all_languages(
         if isinstance(stream_res, Exception) or not isinstance(stream_res, dict):
             continue
         audio_tracks.append({
-            "audio_language": info["audio_language"],
-            "matched_title": info["matched_title"],
+            "language": info["audio_language"],
+            "language_code": info["language_code"],
+            "type": info["type"],
             "subject_id": info["subject_id"],
             "detail_path": info["detail_path"],
             "has_resource": stream_res.get("has_resource", False),
@@ -710,6 +690,7 @@ async def get_stream_all_languages(
 
     return {
         "query_title": title,
+        "matched_main_title": sub_detail.get("title") or title,
         "se": se,
         "ep": ep,
         "total_languages": len(audio_tracks),
