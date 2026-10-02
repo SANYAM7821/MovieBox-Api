@@ -612,9 +612,9 @@ async def get_stream_all_languages(
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number")
 ):
-    # Step 1: Search for the title
+    # Step 1: Search for the title (fetch up to 30 items to catch all language dubs)
     search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 15})
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 30})
     inner = search_res.get("data", {})
     raw = inner.get("items", inner.get("list", []))
 
@@ -631,14 +631,49 @@ async def get_stream_all_languages(
         if not subject_id or not detail_path:
             continue
 
+        # Classify all possible audio language dubs
         if re.search(r'\[english\]|\benglish\b', name, re.IGNORECASE):
             lang = "English Dub"
         elif re.search(r'\[hindi\]|\bhindi\b', name, re.IGNORECASE):
             lang = "Hindi Dub"
-        elif re.search(r'\[spanish\]|\bspanish\b', name, re.IGNORECASE):
+        elif re.search(r'\[tamil\]|\btamil\b', name, re.IGNORECASE):
+            lang = "Tamil Dub"
+        elif re.search(r'\[telugu\]|\btelugu\b', name, re.IGNORECASE):
+            lang = "Telugu Dub"
+        elif re.search(r'\[malayalam\]|\bmalayalam\b', name, re.IGNORECASE):
+            lang = "Malayalam Dub"
+        elif re.search(r'\[kannada\]|\bkannada\b', name, re.IGNORECASE):
+            lang = "Kannada Dub"
+        elif re.search(r'\[spanish\]|español|\bspanish\b', name, re.IGNORECASE):
             lang = "Spanish Dub"
+        elif re.search(r'\[french\]|français|\bfrench\b', name, re.IGNORECASE):
+            lang = "French Dub"
+        elif re.search(r'\[german\]|deutsch|\bgerman\b', name, re.IGNORECASE):
+            lang = "German Dub"
+        elif re.search(r'\[portuguese\]|português|\bportuguese\b', name, re.IGNORECASE):
+            lang = "Portuguese Dub"
+        elif re.search(r'\[italian\]|italiano|\bitalian\b', name, re.IGNORECASE):
+            lang = "Italian Dub"
+        elif re.search(r'\[indonesian\]|\bindonesian\b', name, re.IGNORECASE):
+            lang = "Indonesian Dub"
+        elif re.search(r'\[vietnamese\]|\bvietnamese\b', name, re.IGNORECASE):
+            lang = "Vietnamese Dub"
+        elif re.search(r'\[thai\]|\bthai\b', name, re.IGNORECASE):
+            lang = "Thai Dub"
+        elif re.search(r'\[tagalog\]|filipino|\btagalog\b', name, re.IGNORECASE):
+            lang = "Tagalog Dub"
+        elif re.search(r'\[arabic\]|\barabic\b', name, re.IGNORECASE):
+            lang = "Arabic Dub"
+        elif re.search(r'\[russian\]|\brussian\b', name, re.IGNORECASE):
+            lang = "Russian Dub"
+        elif re.search(r'\[chinese\]|mandarin|\bchinese\b', name, re.IGNORECASE):
+            lang = "Chinese Dub"
+        elif re.search(r'\[korean\]|\bkorean\b', name, re.IGNORECASE):
+            lang = "Korean Dub"
+        elif re.search(r'\[japanese\]|\bjapanese\b', name, re.IGNORECASE):
+            lang = "Japanese"
         else:
-            lang = "Japanese (Original)"
+            lang = "Japanese / Original Audio"
 
         if lang not in lang_map:
             lang_map[lang] = {
