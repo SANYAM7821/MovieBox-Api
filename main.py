@@ -594,8 +594,7 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
 
 @app.get("/api/stream/{subject_id}/captions")
 async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
-    dom_data = await _make_request(f"{API_BASE}/media-player/get-domain")
-    domain = dom_data.get("data", "https://netfilm.world").rstrip("/")
+    domain = await _get_player_domain()
 
     player_referer = (
         f"{domain}/spa/videoPlayPage/movies/{detail_path}"
@@ -603,9 +602,9 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
     )
     play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        play_resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
-        play_data = play_resp.json().get("data", {})
+    client = get_httpx_client()
+    play_resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
+    play_data = play_resp.json().get("data", {})
 
     streams = play_data.get("streams", [])
     dash = play_data.get("dash", [])
@@ -630,6 +629,46 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
     inner = data.get("data", {})
     captions = inner.get("captions", []) if isinstance(inner, dict) else inner
     return {"subject_id": subject_id, "se": se, "ep": ep, "count": len(captions), "captions": captions}
+
+@app.get("/api/captions-by-name")
+async def get_captions_by_name(
+    title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Naruto, Demon Slayer)"),
+    se: int = Query(1, description="Season number"),
+    ep: int = Query(1, description="Episode number")
+):
+    cache_key = f"captions_by_name:{title.strip().lower()}:s{se}:e{ep}"
+    cached = await get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    search_url = f"{API_BASE}/subject/search"
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
+    inner = search_res.get("data", {})
+    raw = inner.get("items", inner.get("list", []))
+
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
+
+    top_match = raw[0]
+    sub = top_match.get("subject") or top_match
+    subject_id = str(sub.get("subjectId"))
+    detail_path = str(sub.get("detailPath"))
+    matched_title = sub.get("title") or top_match.get("title") or title
+
+    captions_res = await get_captions(subject_id=subject_id, detail_path=detail_path, se=se, ep=ep)
+
+    res_data = {
+        "query_title": title,
+        "matched_title": matched_title,
+        "subject_id": subject_id,
+        "detail_path": detail_path,
+        "se": se,
+        "ep": ep,
+        "count": captions_res.get("count", 0),
+        "captions": captions_res.get("captions", [])
+    }
+    await set_cached_response(cache_key, res_data, ttl_seconds=7200)
+    return res_data
 
 @app.get("/api/stream-by-name")
 async def get_stream_by_name(
