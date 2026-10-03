@@ -1,8 +1,10 @@
 import os
 import re
 import json
+import time
 import httpx
 import asyncio
+import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -10,7 +12,7 @@ from fastapi.responses import HTMLResponse
 app = FastAPI(
     title="MovieBox API Pro",
     description="Full Pure REST API for moviebox.ph — Zero Scraping",
-    version="2.1.5"
+    version="2.2.0"
 )
 
 app.add_middleware(
@@ -24,6 +26,61 @@ BASE_URL = "https://moviebox.ph"
 API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
 _bearer_token: str | None = None
+_CACHED_DOMAIN: str | None = None
+_async_client: httpx.AsyncClient | None = None
+
+REDIS_URL = os.environ.get("REDIS_URL")
+_redis: aioredis.Redis | None = None
+_MEM_CACHE: dict = {}  # Local fallback cache: key -> (value, expiry_timestamp)
+
+@app.on_event("startup")
+async def startup_event():
+    global _redis
+    if REDIS_URL:
+        try:
+            _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+            await _redis.ping()
+            print("Connected to Redis successfully!")
+        except Exception as e:
+            print(f"Redis connection warning: {e}")
+            _redis = None
+
+def get_httpx_client() -> httpx.AsyncClient:
+    global _async_client
+    if _async_client is None or _async_client.is_closed:
+        _async_client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=20.0,
+            limits=httpx.Limits(max_keepalive_connections=30, max_connections=50)
+        )
+    return _async_client
+
+async def get_cached_response(key: str) -> dict | None:
+    global _redis, _MEM_CACHE
+    if _redis:
+        try:
+            data = await _redis.get(key)
+            if data:
+                return json.loads(data)
+        except Exception:
+            pass
+    if key in _MEM_CACHE:
+        val, expiry = _MEM_CACHE[key]
+        if time.time() < expiry:
+            return val
+        else:
+            del _MEM_CACHE[key]
+    return None
+
+async def set_cached_response(key: str, value: dict, ttl_seconds: int = 7200):
+    global _redis, _MEM_CACHE
+    if _redis:
+        try:
+            await _redis.set(key, json.dumps(value), ex=ttl_seconds)
+            return
+        except Exception:
+            pass
+    _MEM_CACHE[key] = (value, time.time() + ttl_seconds)
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
@@ -63,19 +120,29 @@ async def _get_bearer_token() -> str:
     global _bearer_token
     if _bearer_token:
         return _bearer_token
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        resp = await client.get(f"{API_BASE}/home?host=moviebox.ph", headers=DEFAULT_HEADERS)
-        x_user = resp.headers.get("x-user")
-        if x_user:
-            _bearer_token = json.loads(x_user).get("token")
-        if not _bearer_token:
-            # fallback: read from set-cookie
-            cookie = resp.headers.get("set-cookie", "")
-            import re as _re
-            m = _re.search(r"token=([^;]+)", cookie)
-            if m:
-                _bearer_token = m.group(1)
+    client = get_httpx_client()
+    resp = await client.get(f"{API_BASE}/home?host=moviebox.ph", headers=DEFAULT_HEADERS)
+    x_user = resp.headers.get("x-user")
+    if x_user:
+        _bearer_token = json.loads(x_user).get("token")
+    if not _bearer_token:
+        cookie = resp.headers.get("set-cookie", "")
+        import re as _re
+        m = _re.search(r"token=([^;]+)", cookie)
+        if m:
+            _bearer_token = m.group(1)
     return _bearer_token or ""
+
+async def _get_player_domain() -> str:
+    global _CACHED_DOMAIN
+    if _CACHED_DOMAIN:
+        return _CACHED_DOMAIN
+    try:
+        dom_data = await _make_request(f"{API_BASE}/media-player/get-domain")
+        _CACHED_DOMAIN = dom_data.get("data", "https://netfilm.world").rstrip("/")
+    except Exception:
+        _CACHED_DOMAIN = "https://netfilm.world"
+    return _CACHED_DOMAIN
 
 async def _make_request(url: str, method: str = "GET", payload: dict = None, custom_headers: dict = None) -> dict:
     global _bearer_token
@@ -85,27 +152,26 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
         "Authorization": f"Bearer {token}" if token else "",
         **(custom_headers or {})
     }
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        try:
-            if method == "POST":
-                resp = await client.post(url, headers=headers, json=payload)
-            else:
-                resp = await client.get(url, headers=headers)
+    client = get_httpx_client()
+    try:
+        if method == "POST":
+            resp = await client.post(url, headers=headers, json=payload)
+        else:
+            resp = await client.get(url, headers=headers)
 
-            # Refresh token if server sends a new one
-            x_user = resp.headers.get("x-user")
-            if x_user:
-                new_token = json.loads(x_user).get("token")
-                if new_token:
-                    _bearer_token = new_token
+        x_user = resp.headers.get("x-user")
+        if x_user:
+            new_token = json.loads(x_user).get("token")
+            if new_token:
+                _bearer_token = new_token
 
-            if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail=f"Upstream API error: {resp.status_code}")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Upstream API error: {resp.status_code}")
 
-            return resp.json()
-        except Exception as e:
-            if isinstance(e, HTTPException): raise e
-            raise HTTPException(status_code=502, detail=f"Request failed: {str(e)}")
+        return resp.json()
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(status_code=502, detail=f"Request failed: {str(e)}")
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -487,20 +553,19 @@ async def get_movie_detail(slug: str):
 
 @app.get("/api/stream/{subject_id}")
 async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
-    # Step 1: get the player domain
-    dom_data = await _make_request(f"{API_BASE}/media-player/get-domain")
-    domain = dom_data.get("data", "https://netfilm.world").rstrip("/")
+    # Step 1: get the cached player domain
+    domain = await _get_player_domain()
 
-    # Step 2: build the Referer the way the real browser player does
+    # Step 2: build Referer and play_url
     player_referer = (
         f"{domain}/spa/videoPlayPage/movies/{detail_path}"
         f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
     )
     play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
-        data = resp.json().get("data", {})
+    client = get_httpx_client()
+    resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
+    data = resp.json().get("data", {})
 
     has_resource = data.get("hasResource", False)
     streams = [
@@ -572,6 +637,11 @@ async def get_stream_by_name(
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number")
 ):
+    cache_key = f"stream_by_name:{title.strip().lower()}:s{se}:e{ep}"
+    cached = await get_cached_response(cache_key)
+    if cached:
+        return cached
+
     # Step 1: Search for the title
     search_url = f"{API_BASE}/subject/search"
     search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
@@ -590,7 +660,7 @@ async def get_stream_by_name(
     # Step 2: Fetch stream resources directly
     stream_res = await get_stream_sources(subject_id=subject_id, detail_path=detail_path, se=se, ep=ep)
 
-    return {
+    res_data = {
         "query_title": title,
         "matched_title": matched_title,
         "subject_id": subject_id,
@@ -605,6 +675,8 @@ async def get_stream_by_name(
         "limited": stream_res.get("limited", False),
         "note": stream_res.get("note")
     }
+    await set_cached_response(cache_key, res_data, ttl_seconds=7200)
+    return res_data
 
 @app.get("/api/stream-all-languages")
 async def get_stream_all_languages(
@@ -613,6 +685,11 @@ async def get_stream_all_languages(
     ep: int = Query(1, description="Episode number"),
     dubs_only: bool = Query(True, description="Filter for audio dubs only and exclude subtitle-only tracks")
 ):
+    cache_key = f"stream_all_langs:{title.strip().lower()}:s{se}:e{ep}:dubs{dubs_only}"
+    cached = await get_cached_response(cache_key)
+    if cached:
+        return cached
+
     # Step 1: Search for top match
     search_url = f"{API_BASE}/subject/search"
     search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
@@ -688,7 +765,7 @@ async def get_stream_all_languages(
             "dash": stream_res.get("dash", [])
         })
 
-    return {
+    res_data = {
         "query_title": title,
         "matched_main_title": sub_detail.get("title") or title,
         "se": se,
@@ -696,6 +773,9 @@ async def get_stream_all_languages(
         "total_languages": len(audio_tracks),
         "audio_tracks": audio_tracks
     }
+
+    await set_cached_response(cache_key, res_data, ttl_seconds=7200)
+    return res_data
 
 if __name__ == "__main__":
     import uvicorn
