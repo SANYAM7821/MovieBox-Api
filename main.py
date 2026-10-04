@@ -920,6 +920,147 @@ async def get_anime_download_link(
     await set_cached_response(cache_key, res_data, ttl_seconds=7200)
     return res_data
 
+def _parse_episodes_list(ep_str: str) -> list[int]:
+    episodes = set()
+    parts = ep_str.split(",")
+    for p in parts:
+        p = p.strip()
+        if "-" in p:
+            try:
+                start, end = p.split("-")
+                for ep in range(int(start), int(end) + 1):
+                    if 1 <= ep <= 1000:
+                        episodes.add(ep)
+            except Exception:
+                pass
+        else:
+            try:
+                ep = int(p)
+                if 1 <= ep <= 1000:
+                    episodes.add(ep)
+            except Exception:
+                pass
+    return sorted(list(episodes))[:30]
+
+@app.get("/api/anime/batch-download")
+async def get_anime_batch_download_links(
+    title: str = Query(..., min_length=1, description="Anime title (e.g. Demon Slayer, Naruto)"),
+    episodes: str = Query(..., description="Episode list or range (e.g. '1,3,7,13' or '1-5')"),
+    se: int = Query(1, description="Season number"),
+    audio: str = Query("Japanese", description="Audio language preference (e.g. Hindi, English, Japanese, Tamil)"),
+    quality: str = Query("1080p", description="Video quality preference (e.g. 1080p, 720p, 480p, 360p)")
+):
+    parsed_episodes = _parse_episodes_list(episodes)
+    if not parsed_episodes:
+        raise HTTPException(status_code=400, detail="Invalid episodes format. Use format like '1,3,7,13' or '1-5'")
+
+    cache_key = f"anime_batch:{title.strip().lower()}:s{se}:eps{','.join(map(str, parsed_episodes))}:a{audio.strip().lower()}:q{quality.strip().lower()}"
+    cached = await get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    # Step 1: Search for top match
+    search_url = f"{API_BASE}/subject/search"
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
+    inner = search_res.get("data", {})
+    raw = inner.get("items", inner.get("list", []))
+
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No anime or title found matching '{title}'")
+
+    top_match = raw[0]
+    sub = top_match.get("subject") or top_match
+    detail_path = str(sub.get("detailPath"))
+
+    # Step 2: Query MovieBox official detail endpoint for official 'dubs' list
+    detail_data = await _make_request(f"{API_BASE}/detail?detailPath={detail_path}")
+    sub_detail = detail_data.get("data", {}).get("subject", {})
+    official_dubs = sub_detail.get("dubs", [])
+
+    selected_dub = None
+    target_audio = audio.strip().lower()
+
+    if official_dubs:
+        for d in official_dubs:
+            lan_name = (d.get("lanName") or "").lower()
+            lan_code = (d.get("lanCode") or "").lower()
+            if target_audio in lan_name or target_audio in lan_code:
+                selected_dub = d
+                break
+        if not selected_dub:
+            selected_dub = official_dubs[0]
+
+    if selected_dub:
+        subject_id = str(selected_dub.get("subjectId"))
+        dpath = str(selected_dub.get("detailPath"))
+        matched_audio = selected_dub.get("lanName") or "Default Audio"
+    else:
+        subject_id = str(sub.get("subjectId"))
+        dpath = detail_path
+        matched_audio = "Original Audio"
+
+    # Step 3: Fetch stream sources for all requested episodes concurrently
+    tasks = [
+        get_stream_sources(subject_id=subject_id, detail_path=dpath, se=se, ep=ep_num)
+        for ep_num in parsed_episodes
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    target_q = quality.strip().lower().replace("p", "") + "p"
+    batch_episodes = []
+
+    for ep_num, stream_res in zip(parsed_episodes, results):
+        if isinstance(stream_res, Exception) or not isinstance(stream_res, dict):
+            continue
+
+        sources = stream_res.get("sources", [])
+        if not sources:
+            continue
+
+        matched_source = None
+        for s in sources:
+            if str(s.get("resolution")).lower() == target_q:
+                matched_source = s
+                break
+        if not matched_source:
+            matched_source = sources[0]
+
+        raw_size = int(matched_source.get("size") or 0)
+        size_mb = f"{round(raw_size / (1024 * 1024), 2)} MB" if raw_size > 0 else "Unknown"
+
+        batch_episodes.append({
+            "ep": ep_num,
+            "resolution": matched_source.get("resolution"),
+            "direct_download_url": matched_source.get("url"),
+            "size_bytes": raw_size,
+            "size_mb": size_mb,
+            "duration_seconds": matched_source.get("duration"),
+            "available_qualities": [s.get("resolution") for s in sources]
+        })
+
+    res_data = {
+        "query": {
+            "title": title,
+            "se": se,
+            "episodes_input": episodes,
+            "episodes_parsed": parsed_episodes,
+            "audio": audio,
+            "quality": quality
+        },
+        "matched_title": sub_detail.get("title") or title,
+        "selected_audio": matched_audio,
+        "selected_quality": quality,
+        "total_episodes_found": len(batch_episodes),
+        "required_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://netfilm.world/"
+        },
+        "episodes": batch_episodes
+    }
+
+    await set_cached_response(cache_key, res_data, ttl_seconds=7200)
+    return res_data
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
