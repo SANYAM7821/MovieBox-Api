@@ -816,6 +816,110 @@ async def get_stream_all_languages(
     await set_cached_response(cache_key, res_data, ttl_seconds=7200)
     return res_data
 
+@app.get("/api/anime/download")
+async def get_anime_download_link(
+    title: str = Query(..., min_length=1, description="Anime title (e.g. Demon Slayer, Naruto)"),
+    se: int = Query(1, description="Season number"),
+    ep: int = Query(1, description="Episode number"),
+    audio: str = Query("Japanese", description="Audio language preference (e.g. Hindi, English, Japanese, Tamil)"),
+    quality: str = Query("1080p", description="Video quality preference (e.g. 1080p, 720p, 480p, 360p)")
+):
+    cache_key = f"anime_download:{title.strip().lower()}:s{se}:e{ep}:a{audio.strip().lower()}:q{quality.strip().lower()}"
+    cached = await get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    # Step 1: Search for top match
+    search_url = f"{API_BASE}/subject/search"
+    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
+    inner = search_res.get("data", {})
+    raw = inner.get("items", inner.get("list", []))
+
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No anime or title found matching '{title}'")
+
+    top_match = raw[0]
+    sub = top_match.get("subject") or top_match
+    detail_path = str(sub.get("detailPath"))
+
+    # Step 2: Query MovieBox official detail endpoint for official 'dubs' list
+    detail_data = await _make_request(f"{API_BASE}/detail?detailPath={detail_path}")
+    sub_detail = detail_data.get("data", {}).get("subject", {})
+    official_dubs = sub_detail.get("dubs", [])
+
+    selected_dub = None
+    target_audio = audio.strip().lower()
+
+    if official_dubs:
+        for d in official_dubs:
+            lan_name = (d.get("lanName") or "").lower()
+            lan_code = (d.get("lanCode") or "").lower()
+            if target_audio in lan_name or target_audio in lan_code:
+                selected_dub = d
+                break
+        if not selected_dub:
+            selected_dub = official_dubs[0]
+
+    if selected_dub:
+        subject_id = str(selected_dub.get("subjectId"))
+        dpath = str(selected_dub.get("detailPath"))
+        matched_audio = selected_dub.get("lanName") or "Default Audio"
+    else:
+        subject_id = str(sub.get("subjectId"))
+        dpath = detail_path
+        matched_audio = "Original Audio"
+
+    # Step 3: Fetch stream sources for selected audio track
+    stream_res = await get_stream_sources(subject_id=subject_id, detail_path=dpath, se=se, ep=ep)
+    sources = stream_res.get("sources", [])
+
+    if not sources:
+        raise HTTPException(status_code=404, detail=f"No video sources found for '{title}' S{se}E{ep} in {matched_audio}")
+
+    # Step 4: Match requested video quality
+    matched_source = None
+    target_q = quality.strip().lower().replace("p", "") + "p"
+
+    for s in sources:
+        if str(s.get("resolution")).lower() == target_q:
+            matched_source = s
+            break
+
+    if not matched_source:
+        matched_source = sources[0]
+
+    raw_size = int(matched_source.get("size") or 0)
+    size_mb = f"{round(raw_size / (1024 * 1024), 2)} MB" if raw_size > 0 else "Unknown"
+
+    res_data = {
+        "query": {
+            "title": title,
+            "se": se,
+            "ep": ep,
+            "audio": audio,
+            "quality": quality
+        },
+        "matched_title": sub_detail.get("title") or title,
+        "selected_audio": matched_audio,
+        "selected_quality": matched_source.get("resolution"),
+        "direct_download_url": matched_source.get("url"),
+        "required_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://netfilm.world/"
+        },
+        "file_info": {
+            "format": matched_source.get("format", "MP4"),
+            "size_bytes": raw_size,
+            "size_mb": size_mb,
+            "duration_seconds": matched_source.get("duration")
+        },
+        "available_qualities": [s.get("resolution") for s in sources],
+        "available_audios": [d.get("lanName") for d in official_dubs if d.get("lanName")] if official_dubs else [matched_audio]
+    }
+
+    await set_cached_response(cache_key, res_data, ttl_seconds=7200)
+    return res_data
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
