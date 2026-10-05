@@ -206,13 +206,30 @@ KNOWN_TITLE_ALIASES = {
     "you & i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
     "polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
 
-    # Demon Slayer
+    # Demon Slayer Movies & Specials
+    "demon slayer: kimetsu no yaiba the movie: mugen train": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "demon slayer the movie: mugen train": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "demon slayer the movie mugen train": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "demon slayer mugen train movie": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "kimetsu no yaiba movie: mugen ressha-hen": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "kimetsu no yaiba: mugen ressha-hen (movie)": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "demon slayer: kimetsu no yaiba - the movie: mugen train": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "demon slayer movie": "demon-slayer-the-movie-mugen-train-Y6S4bqiCH45",
+    "demon slayer to the swordsmith village": "demon-slayer-kimetsu-no-yaiba-to-the-swordsmith-village-m1M35x9lYQ7",
+    "demon slayer to the hashira training": "demon-slayer-kimetsu-no-yaiba-to-the-hashira-training-qgU55734E24",
+
+    # Demon Slayer TV
     "demon slayer": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
     "demon slayer: kimetsu no yaiba": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
     "kimetsu no yaiba": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
     "demon slayer kimetsu no yaiba": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
 
-    # Jujutsu Kaisen
+    # Jujutsu Kaisen 0 Movie
+    "jujutsu kaisen 0": "jujutsu-kaisen-0-the-movie-english-iKoyF8b4Qn1",
+    "jujutsu kaisen 0 the movie": "jujutsu-kaisen-0-the-movie-english-iKoyF8b4Qn1",
+    "jujutsu kaisen 0: the movie": "jujutsu-kaisen-0-the-movie-english-iKoyF8b4Qn1",
+
+    # Jujutsu Kaisen TV
     "jujutsu kaisen": "jujutsu-kaisen-english-gCBS4ln5U9",
     "jujutsu kaisen 2nd season": "jujutsu-kaisen-english-gCBS4ln5U9",
     "jujutsu kaisen season 2": "jujutsu-kaisen-english-gCBS4ln5U9",
@@ -387,20 +404,31 @@ def resolve_effective_se_and_ep(
     if not valid_se_nums:
         return (requested_se, requested_ep)
 
-    # 1. Check explicit arc & multi-part cour patterns
+    # 1. Special Comprehensive Mapping for Demon Slayer (Kimetsu no Yaiba)
+    if "demon slayer" in t_clean or "kimetsu no yaiba" in t_clean:
+        s2_max = se_map.get(2, 0)
+        is_model_b = (s2_max >= 18) # Model B combines Mugen Train (1-7) & Entertainment District (8-18) in Season 2
+
+        if "hashira training" in t_clean or "hashira geiko" in t_clean:
+            target_se = 4 if is_model_b else 5
+            return (target_se, requested_ep)
+
+        if "swordsmith village" in t_clean or "katanakaji no sato" in t_clean:
+            target_se = 3 if is_model_b else 4
+            return (target_se, requested_ep)
+
+        if "entertainment district" in t_clean or "yuukaku" in t_clean:
+            if is_model_b:
+                return (2, requested_ep + 7)
+            else:
+                return (3, requested_ep)
+
+        if "mugen train" in t_clean or "mugen ressha" in t_clean:
+            return (2, requested_ep)
+
+    # 2. Check other explicit arc & multi-part cour patterns
     for pattern, target_season, part_offset in ANIME_ARC_SEASON_MAP:
         if re.search(pattern, t_clean):
-            # Special case for Demon Slayer Entertainment District:
-            if "entertainment district" in t_clean or "yuukaku" in t_clean:
-                s2_max = se_map.get(2, 0)
-                s3_max = se_map.get(3, 0)
-                if s2_max >= 18:
-                    # Combined Season 2 (Mugen Train 1-7, Entertainment District 8-18)
-                    return (2, requested_ep + 7)
-                elif s3_max >= 11:
-                    # Dedicated Season 3
-                    return (3, requested_ep)
-
             # Check if target_season exists in MovieBox subject
             if target_season in se_map:
                 max_ep_in_se = se_map[target_season]
@@ -830,6 +858,23 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
 # MAIN PUBLIC API ENDPOINTS WITH FULL RESOLVER
 # ═══════════════════════════════════════════════════════════════════════════
 
+async def _get_dub_seasons(detail_path: str, default_seasons: list[dict]) -> list[dict]:
+    if not detail_path:
+        return default_seasons
+    cache_key = f"dub_seasons_v1:{detail_path}"
+    cached = await get_cached_response(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        dub_data = await _make_request(f"{API_BASE}/detail?detailPath={detail_path}")
+        seasons = dub_data.get("data", {}).get("resource", {}).get("seasons", [])
+        if seasons:
+            await set_cached_response(cache_key, seasons, ttl_seconds=86400)
+            return seasons
+    except Exception:
+        pass
+    return default_seasons
+
 @app.get("/api/stream-all-languages")
 async def get_stream_all_languages(
     title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Demon Slayer, Naruto)"),
@@ -837,7 +882,7 @@ async def get_stream_all_languages(
     ep: int = Query(1, description="Episode number"),
     dubs_only: bool = Query(True, description="Filter for audio dubs only and exclude subtitle-only tracks")
 ):
-    cache_key = f"stream_all_langs_v3:{title.strip().lower()}:s{se}:e{ep}:dubs{dubs_only}"
+    cache_key = f"stream_all_langs_v4:{title.strip().lower()}:s{se}:e{ep}:dubs{dubs_only}"
     cached = await get_cached_response(cache_key)
     if cached:
         return cached
@@ -854,7 +899,7 @@ async def get_stream_all_languages(
     subject_type = sub_detail.get("subjectType", 2)
     official_dubs = sub_detail.get("dubs", [])
 
-    # Step 3: Resolve exact season & episode numbers
+    # Step 3: Resolve exact season & episode numbers for main subject
     eff_se, eff_ep = resolve_effective_se_and_ep(
         query_title=title,
         requested_se=se,
@@ -895,15 +940,27 @@ async def get_stream_all_languages(
             "type": "dub"
         }
 
-    # Step 4: Fetch video stream resources for all detected languages concurrently
-    tasks = [
-        get_stream_sources(subject_id=info["subject_id"], detail_path=info["detail_path"], se=eff_se, ep=eff_ep)
-        for info in lang_map.values()
-    ]
+    # Step 4: Fetch video stream resources for all detected languages concurrently with per-dub season resolution
+    async def _fetch_single_dub_stream(info: dict):
+        dub_seasons = await _get_dub_seasons(info["detail_path"], available_seasons)
+        dub_se, dub_ep = resolve_effective_se_and_ep(
+            query_title=title,
+            requested_se=se,
+            requested_ep=ep,
+            available_seasons=dub_seasons,
+            subject_type=subject_type
+        )
+        stream_res = await get_stream_sources(subject_id=info["subject_id"], detail_path=info["detail_path"], se=dub_se, ep=dub_ep)
+        return (info, dub_se, dub_ep, stream_res)
+
+    tasks = [_fetch_single_dub_stream(info) for info in lang_map.values()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     audio_tracks = []
-    for info, stream_res in zip(lang_map.values(), results):
+    for item in results:
+        if isinstance(item, Exception) or not isinstance(item, tuple):
+            continue
+        info, dub_se, dub_ep, stream_res = item
         if isinstance(stream_res, Exception) or not isinstance(stream_res, dict):
             continue
         audio_tracks.append({
@@ -912,6 +969,8 @@ async def get_stream_all_languages(
             "type": info["type"],
             "subject_id": info["subject_id"],
             "detail_path": info["detail_path"],
+            "se": dub_se,
+            "ep": dub_ep,
             "has_resource": stream_res.get("has_resource", False),
             "sources": stream_res.get("sources", []),
             "hls": stream_res.get("hls", []),
@@ -1006,7 +1065,8 @@ async def get_anime_batch_download_links(
         dpath = detail_path
         matched_audio = "Original Audio"
 
-    # Step 3: Resolve effective (se, ep) for each episode and fetch stream sources concurrently
+    # Step 3: Resolve effective (se, ep) for each episode using selected dub seasons
+    dub_seasons = await _get_dub_seasons(dpath, available_seasons)
     ep_tasks = []
     resolved_pairs = []
     for ep_num in parsed_episodes:
@@ -1014,7 +1074,7 @@ async def get_anime_batch_download_links(
             query_title=title,
             requested_se=se,
             requested_ep=ep_num,
-            available_seasons=available_seasons,
+            available_seasons=dub_seasons,
             subject_type=subject_type
         )
         resolved_pairs.append((ep_num, eff_se, eff_ep))
