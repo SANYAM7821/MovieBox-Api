@@ -679,7 +679,12 @@ KNOWN_TITLE_ALIASES = {
     "you and i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
     "seihantai na kimi to boku": "you-and-i-are-polar-opposites-k2INn0hIz07",
     "you & i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
+    "naruto shippuden": "naruto-shippuden-english-84CHPUIQj18",
+    "naruto: shippuden": "naruto-shippuden-english-84CHPUIQj18",
+    "naruto shippūden": "naruto-shippuden-english-84CHPUIQj18",
 }
+
+JUNK_TITLE_KEYWORDS = {"gameplay", "walkthrough", "trailer", "ost", "theme", "soundtrack", "mod", "review", "reaction"}
 
 def _clean_title_str(t: str) -> str:
     t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
@@ -808,6 +813,10 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                 name = str(sub.get("title") or item.get("title") or "")
                 dpath = str(sub.get("detailPath") or "")
                 if not name or not dpath:
+                    continue
+
+                # Filter out gameplay/trailer/ost non-media items
+                if any(k in name.lower() for k in JUNK_TITLE_KEYWORDS):
                     continue
 
                 if anime_only:
