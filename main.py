@@ -721,10 +721,18 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    # 2. Direct Slug lookup (e.g. you-and-i-are-polar-opposites-k2INn0hIz07)
-    if "-" in query_str and len(query_str) > 10:
+    # 2. Direct Slug or Hyphenated Slug candidate lookup
+    slug_candidates = []
+    if "-" in query_str:
+        slug_candidates.append(query_str)
+
+    clean_slug = re.sub(r'[^a-zA-Z0-9\s-]', '', query_str).strip().lower().replace(" ", "-")
+    if clean_slug and clean_slug not in slug_candidates and len(clean_slug) > 5:
+        slug_candidates.append(clean_slug)
+
+    for slug_try in slug_candidates:
         try:
-            detail_res = await _make_request(f"{API_BASE}/detail?detailPath={query_str}")
+            detail_res = await _make_request(f"{API_BASE}/detail?detailPath={slug_try}")
             sub = detail_res.get("data", {}).get("subject", {})
             if sub and sub.get("subjectId"):
                 return sub
