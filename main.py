@@ -714,7 +714,7 @@ def _calculate_title_similarity(query: str, title: str) -> float:
     return difflib.SequenceMatcher(None, q_cleaned, t_cleaned).ratio()
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
-    """Smart multi-query search engine with direct ID/slug lookup, alias mapping, search-suggest, and fuzzy matching."""
+    """Universal multi-query search engine with AniList title resolver, ID/slug lookup, and fuzzy matching."""
     query_str = query.strip()
 
     # 0. Direct Alias Map lookup
@@ -729,7 +729,7 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    # 1. Direct Subject ID lookup (e.g. 5882893381772234088)
+    # 1. Direct Subject ID lookup
     if query_str.isdigit():
         try:
             detail_res = await _make_request(f"{API_BASE}/detail?subjectId={query_str}")
@@ -757,13 +757,34 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    # 3. Gather queries to search (including season variations, autocomplete suggestions, and AniList synonyms)
-    queries_to_try = [query_str]
+    # 3. Universal AniList Title Resolver (Fetches official English & Romaji titles)
+    search_aliases = [query_str]
+    try:
+        anilist_q = """query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } } }"""
+        async with httpx.AsyncClient(timeout=3.0) as al_client:
+            al_resp = await al_client.post("https://graphql.anilist.co", json={"query": anilist_q, "variables": {"search": query_str}})
+            if al_resp.status_code == 200:
+                al_media = al_resp.json().get("data", {}).get("Media", {})
+                if al_media:
+                    al_titles = al_media.get("title", {})
+                    for key in ["english", "romaji"]:
+                        val = al_titles.get(key)
+                        if val and val.lower() not in [a.lower() for a in search_aliases]:
+                            search_aliases.append(val)
+    except Exception:
+        pass
 
-    if not re.search(r'\bs\d+', query_str, re.IGNORECASE):
-        queries_to_try.append(f"{query_str} S1-S2")
-        queries_to_try.append(f"{query_str} S1")
+    # 4. Generate multi-query search variations (with season suffixes S1-S3, S1-S2, S1)
+    queries_to_try = []
+    for a in search_aliases:
+        if a not in queries_to_try:
+            queries_to_try.append(a)
+        if not re.search(r'\bs\d+', a, re.IGNORECASE):
+            queries_to_try.append(f"{a} S1-S3")
+            queries_to_try.append(f"{a} S1-S2")
+            queries_to_try.append(f"{a} S1")
 
+    # Autocomplete suggestions
     try:
         suggest_res = await _make_request(f"{API_BASE}/subject/search-suggest", method="POST", payload={"keyword": query_str, "perPage": 10})
         s_data = suggest_res.get("data", {})
@@ -772,36 +793,8 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
             w = item.get("word") or (item.get("subject") or {}).get("title")
             if w and w not in queries_to_try:
                 queries_to_try.append(w)
-                if not re.search(r'\bs\d+', w, re.IGNORECASE):
-                    queries_to_try.append(f"{w} S1-S2")
-                    queries_to_try.append(f"{w} S1")
     except Exception:
         pass
-
-    # AniList title synonym resolver for Japanese Romaji / English titles
-    try:
-        anilist_q = """query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } synonyms } }"""
-        async with httpx.AsyncClient(timeout=3.5) as al_client:
-            al_resp = await al_client.post("https://graphql.anilist.co", json={"query": anilist_q, "variables": {"search": query_str}})
-            if al_resp.status_code == 200:
-                al_media = al_resp.json().get("data", {}).get("Media", {})
-                al_titles = al_media.get("title", {})
-                for key in ["romaji", "english"]:
-                    val = al_titles.get(key)
-                    if val and val not in queries_to_try:
-                        queries_to_try.append(val)
-                        if not re.search(r'\bs\d+', val, re.IGNORECASE):
-                            queries_to_try.append(f"{val} S1-S2")
-                            queries_to_try.append(f"{val} S1")
-    except Exception:
-        pass
-
-    # Fallback query without stop words
-    words = [w for w in re.sub(r'[^a-zA-Z0-9\s]', ' ', query_str).split() if w.lower() not in STOP_WORDS]
-    if len(words) >= 1:
-        clean_fallback = ' '.join(words)
-        if clean_fallback not in queries_to_try:
-            queries_to_try.append(clean_fallback)
 
     best_match = None
     best_score = -1.0
@@ -824,8 +817,8 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                 if not name or not dpath:
                     continue
 
-                # Filter out gameplay/trailer/ost non-media items
-                if any(k in name.lower() for k in JUNK_TITLE_KEYWORDS):
+                # Reject gameplay, trailers, music videos
+                if any(j in name.lower() for j in JUNK_TITLE_KEYWORDS):
                     continue
 
                 if anime_only:
@@ -845,9 +838,10 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                     if not is_anime:
                         continue
 
-                score = _calculate_title_similarity(query_str, name)
-                if score > best_score:
-                    best_score = score
+                # Calculate score against all valid aliases
+                s_score = max([_calculate_title_similarity(al, name) for al in search_aliases])
+                if s_score > best_score:
+                    best_score = s_score
                     best_match = sub
 
             if best_score >= 0.85:
