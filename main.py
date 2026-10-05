@@ -725,8 +725,12 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    # 3. Gather queries to search (including autocomplete suggestions)
+    # 3. Gather queries to search (including season variations, autocomplete suggestions, and AniList synonyms)
     queries_to_try = [query_str]
+
+    if not re.search(r'\bs\d+', query_str, re.IGNORECASE):
+        queries_to_try.append(f"{query_str} S1-S2")
+        queries_to_try.append(f"{query_str} S1")
 
     try:
         suggest_res = await _make_request(f"{API_BASE}/subject/search-suggest", method="POST", payload={"keyword": query_str, "perPage": 10})
@@ -736,6 +740,27 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
             w = item.get("word") or (item.get("subject") or {}).get("title")
             if w and w not in queries_to_try:
                 queries_to_try.append(w)
+                if not re.search(r'\bs\d+', w, re.IGNORECASE):
+                    queries_to_try.append(f"{w} S1-S2")
+                    queries_to_try.append(f"{w} S1")
+    except Exception:
+        pass
+
+    # AniList title synonym resolver for Japanese Romaji / English titles
+    try:
+        anilist_q = """query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } synonyms } }"""
+        async with httpx.AsyncClient(timeout=3.5) as al_client:
+            al_resp = await al_client.post("https://graphql.anilist.co", json={"query": anilist_q, "variables": {"search": query_str}})
+            if al_resp.status_code == 200:
+                al_media = al_resp.json().get("data", {}).get("Media", {})
+                al_titles = al_media.get("title", {})
+                for key in ["romaji", "english"]:
+                    val = al_titles.get(key)
+                    if val and val not in queries_to_try:
+                        queries_to_try.append(val)
+                        if not re.search(r'\bs\d+', val, re.IGNORECASE):
+                            queries_to_try.append(f"{val} S1-S2")
+                            queries_to_try.append(f"{val} S1")
     except Exception:
         pass
 
