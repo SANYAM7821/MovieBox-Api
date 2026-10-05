@@ -682,8 +682,8 @@ def _calculate_title_similarity(query: str, title: str) -> float:
 
     return min(score, 1.0)
 
-async def _smart_search_title(query: str) -> dict:
-    """Smart multi-query search engine with fuzzy matching and stop-word fallback."""
+async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
+    """Smart multi-query search engine with fuzzy matching and anime/genre filtering."""
     queries_to_try = [query.strip()]
 
     # Fallback query without stop words
@@ -710,23 +710,41 @@ async def _smart_search_title(query: str) -> dict:
             for item in raw:
                 sub = item.get("subject") or item
                 name = str(sub.get("title") or item.get("title") or "")
-                if not name:
+                dpath = str(sub.get("detailPath") or "")
+                if not name or not dpath:
                     continue
+
+                # If anime_only filter is active, verify subjectType or genre
+                if anime_only:
+                    stype = sub.get("subjectType")
+                    genre = str(sub.get("genre") or "").lower()
+
+                    if not genre and dpath:
+                        try:
+                            detail = await _make_request(f"{API_BASE}/detail?detailPath={dpath}")
+                            sub_detail = detail.get("data", {}).get("subject", {})
+                            stype = sub_detail.get("subjectType")
+                            genre = str(sub_detail.get("genre") or "").lower()
+                        except Exception:
+                            pass
+
+                    is_anime = (stype == 2) or ("anime" in genre) or ("animation" in genre)
+                    if not is_anime:
+                        continue
+
                 score = _calculate_title_similarity(query, name)
                 if score > best_score:
                     best_score = score
                     best_match = sub
 
-            if best_score >= 0.7:
+            if best_score >= 0.6:
                 break
         except Exception:
             pass
 
-    if (not best_match or best_score < 0.2) and last_raw:
-        best_match = last_raw[0].get("subject") or last_raw[0]
-
-    if not best_match:
-        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{query}'")
+    if not best_match or best_score < 0.2:
+        error_msg = f"No anime title found matching '{query}' in catalog" if anime_only else f"No movie, series, or anime found matching title '{query}'"
+        raise HTTPException(status_code=404, detail=error_msg)
 
     return best_match
 
@@ -899,8 +917,8 @@ async def get_anime_download_link(
     if cached:
         return cached
 
-    # Step 1: Smart search for top match
-    sub = await _smart_search_title(title)
+    # Step 1: Smart search with anime_only filter
+    sub = await _smart_search_title(title, anime_only=True)
     detail_path = str(sub.get("detailPath"))
 
     # Step 2: Query MovieBox official detail endpoint for official 'dubs' list
@@ -1020,8 +1038,8 @@ async def get_anime_batch_download_links(
     if cached:
         return cached
 
-    # Step 1: Smart search for top match
-    sub = await _smart_search_title(title)
+    # Step 1: Smart search with anime_only filter
+    sub = await _smart_search_title(title, anime_only=True)
     detail_path = str(sub.get("detailPath"))
 
     # Step 2: Query MovieBox official detail endpoint for official 'dubs' list
