@@ -581,34 +581,18 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
     domain = await _get_player_domain()
     client = get_httpx_client()
 
-    # Try requested (se, ep) first, then try fallback pairs for standalone movies/OVAs/specials (se=0, ep=0)
-    attempts = [(se, ep)]
-    if (se, ep) != (0, 0):
-        attempts.append((0, 0))
-    if (se, ep) != (1, 1):
-        attempts.append((1, 1))
+    player_referer = (
+        f"{domain}/spa/videoPlayPage/movies/{detail_path}"
+        f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
+    )
+    play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
 
     best_data = {}
-    matched_se, matched_ep = se, ep
-
-    for try_se, try_ep in attempts:
-        player_referer = (
-            f"{domain}/spa/videoPlayPage/movies/{detail_path}"
-            f"?id={subject_id}&type=/movie/detail&detailSe={try_se}&detailEp={try_ep}&lang=en"
-        )
-        play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={try_se}&ep={try_ep}&detailPath={detail_path}"
-
-        try:
-            resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
-            data = resp.json().get("data", {})
-            if data.get("hasResource") and data.get("streams"):
-                best_data = data
-                matched_se, matched_ep = try_se, try_ep
-                break
-            elif not best_data:
-                best_data = data
-        except Exception:
-            pass
+    try:
+        resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
+        best_data = resp.json().get("data", {})
+    except Exception:
+        best_data = {}
 
     has_resource = best_data.get("hasResource", False)
     streams = [
@@ -624,8 +608,8 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
     ]
     return {
         "subject_id": subject_id,
-        "se": matched_se,
-        "ep": matched_ep,
+        "se": se,
+        "ep": ep,
         "has_resource": has_resource,
         "sources": streams,
         "hls": best_data.get("hls", []),
@@ -997,9 +981,14 @@ async def get_stream_all_languages(
             "type": "dub"
         }
 
+    # Determine effective se and ep based on subjectType (subjectType 1 = Movie, 2 = TV/Anime)
+    query_se, query_ep = se, ep
+    if sub_detail.get("subjectType") == 1:
+        query_se, query_ep = 0, 0
+
     # Step 3: Fetch video stream resources for all detected languages concurrently
     tasks = [
-        get_stream_sources(subject_id=info["subject_id"], detail_path=info["detail_path"], se=se, ep=ep)
+        get_stream_sources(subject_id=info["subject_id"], detail_path=info["detail_path"], se=query_se, ep=query_ep)
         for info in lang_map.values()
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1078,7 +1067,11 @@ async def get_anime_download_link(
         matched_audio = "Original Audio"
 
     # Step 3: Fetch stream sources for selected audio track
-    stream_res = await get_stream_sources(subject_id=subject_id, detail_path=dpath, se=se, ep=ep)
+    query_se, query_ep = se, ep
+    if sub_detail.get("subjectType") == 1:
+        query_se, query_ep = 0, 0
+
+    stream_res = await get_stream_sources(subject_id=subject_id, detail_path=dpath, se=query_se, ep=query_ep)
     sources = stream_res.get("sources", [])
 
     if not sources:
@@ -1200,8 +1193,9 @@ async def get_anime_batch_download_links(
         matched_audio = "Original Audio"
 
     # Step 3: Fetch stream sources for all requested episodes concurrently
+    query_se = 0 if sub_detail.get("subjectType") == 1 else se
     tasks = [
-        get_stream_sources(subject_id=subject_id, detail_path=dpath, se=se, ep=ep_num)
+        get_stream_sources(subject_id=subject_id, detail_path=dpath, se=query_se, ep=ep_num if query_se != 0 else 0)
         for ep_num in parsed_episodes
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
