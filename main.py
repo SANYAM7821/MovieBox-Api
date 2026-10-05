@@ -548,7 +548,10 @@ async def search(q: str = Query(..., min_length=1), page: int = 1):
 
 @app.get("/detail/{slug}")
 async def get_movie_detail(slug: str):
-    url = f"{API_BASE}/detail?detailPath={slug}"
+    if slug.isdigit():
+        url = f"{API_BASE}/detail?subjectId={slug}"
+    else:
+        url = f"{API_BASE}/detail?detailPath={slug}"
     return await _make_request(url)
 
 @app.get("/api/stream/{subject_id}")
@@ -683,14 +686,48 @@ def _calculate_title_similarity(query: str, title: str) -> float:
     return min(score, 1.0)
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
-    """Smart multi-query search engine with fuzzy matching and anime/genre filtering."""
-    queries_to_try = [query.strip()]
+    """Smart multi-query search engine with direct ID/slug lookup, search-suggest, and fuzzy matching."""
+    query_str = query.strip()
+
+    # 1. Direct Subject ID lookup (e.g. 5882893381772234088)
+    if query_str.isdigit():
+        try:
+            detail_res = await _make_request(f"{API_BASE}/detail?subjectId={query_str}")
+            sub = detail_res.get("data", {}).get("subject", {})
+            if sub and sub.get("subjectId"):
+                return sub
+        except Exception:
+            pass
+
+    # 2. Direct Slug lookup (e.g. you-and-i-are-polar-opposites-k2INn0hIz07)
+    if "-" in query_str and len(query_str) > 10:
+        try:
+            detail_res = await _make_request(f"{API_BASE}/detail?detailPath={query_str}")
+            sub = detail_res.get("data", {}).get("subject", {})
+            if sub and sub.get("subjectId"):
+                return sub
+        except Exception:
+            pass
+
+    # 3. Gather queries to search (including autocomplete suggestions)
+    queries_to_try = [query_str]
+
+    try:
+        suggest_res = await _make_request(f"{API_BASE}/subject/search-suggest", method="POST", payload={"keyword": query_str, "perPage": 10})
+        s_data = suggest_res.get("data", {})
+        s_items = s_data.get("items", s_data.get("list", []))
+        for item in s_items:
+            w = item.get("word") or (item.get("subject") or {}).get("title")
+            if w and w not in queries_to_try:
+                queries_to_try.append(w)
+    except Exception:
+        pass
 
     # Fallback query without stop words
-    words = [w for w in re.sub(r'[^a-zA-Z0-9\s]', ' ', query).split() if w.lower() not in STOP_WORDS]
+    words = [w for w in re.sub(r'[^a-zA-Z0-9\s]', ' ', query_str).split() if w.lower() not in STOP_WORDS]
     if len(words) >= 1:
         clean_fallback = ' '.join(words)
-        if clean_fallback != query.strip() and clean_fallback not in queries_to_try:
+        if clean_fallback not in queries_to_try:
             queries_to_try.append(clean_fallback)
 
     best_match = None
@@ -732,7 +769,7 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                     if not is_anime:
                         continue
 
-                score = _calculate_title_similarity(query, name)
+                score = _calculate_title_similarity(query_str, name)
                 if score > best_score:
                     best_score = score
                     best_match = sub
@@ -742,8 +779,11 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    if not best_match or best_score < 0.2:
-        error_msg = f"No anime title found matching '{query}' in catalog" if anime_only else f"No movie, series, or anime found matching title '{query}'"
+    if (not best_match or best_score < 0.2) and last_raw and not anime_only:
+        best_match = last_raw[0].get("subject") or last_raw[0]
+
+    if not best_match:
+        error_msg = f"No anime title found matching '{query_str}' in catalog" if anime_only else f"No movie, series, or anime found matching title '{query_str}'"
         raise HTTPException(status_code=404, detail=error_msg)
 
     return best_match
