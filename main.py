@@ -665,14 +665,20 @@ def _calculate_title_similarity(query: str, title: str) -> float:
     q_words = set(q_cleaned.split()) - STOP_WORDS
     t_words = set(t_cleaned.split()) - STOP_WORDS
 
-    if not q_words or not t_words:
+    if q_words and not t_words:
+        return 0.05
+
+    if not q_words and not t_words:
         return 1.0 if q_cleaned in t_cleaned or t_cleaned in q_cleaned else 0.0
 
     intersection = q_words.intersection(t_words)
+    if not intersection:
+        return 0.0
+
     score = len(intersection) / float(len(q_words))
 
     if q_cleaned in t_cleaned or t_cleaned in q_cleaned:
-        score += 0.3
+        score += 0.2
 
     return min(score, 1.0)
 
