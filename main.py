@@ -553,21 +553,39 @@ async def get_movie_detail(slug: str):
 
 @app.get("/api/stream/{subject_id}")
 async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
-    # Step 1: get the cached player domain
     domain = await _get_player_domain()
-
-    # Step 2: build Referer and play_url
-    player_referer = (
-        f"{domain}/spa/videoPlayPage/movies/{detail_path}"
-        f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
-    )
-    play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
-
     client = get_httpx_client()
-    resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
-    data = resp.json().get("data", {})
 
-    has_resource = data.get("hasResource", False)
+    # Try requested (se, ep) first, then try fallback pairs for standalone movies/OVAs/specials (se=0, ep=0)
+    attempts = [(se, ep)]
+    if (se, ep) != (0, 0):
+        attempts.append((0, 0))
+    if (se, ep) != (1, 1):
+        attempts.append((1, 1))
+
+    best_data = {}
+    matched_se, matched_ep = se, ep
+
+    for try_se, try_ep in attempts:
+        player_referer = (
+            f"{domain}/spa/videoPlayPage/movies/{detail_path}"
+            f"?id={subject_id}&type=/movie/detail&detailSe={try_se}&detailEp={try_ep}&lang=en"
+        )
+        play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={try_se}&ep={try_ep}&detailPath={detail_path}"
+
+        try:
+            resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
+            data = resp.json().get("data", {})
+            if data.get("hasResource") and data.get("streams"):
+                best_data = data
+                matched_se, matched_ep = try_se, try_ep
+                break
+            elif not best_data:
+                best_data = data
+        except Exception:
+            pass
+
+    has_resource = best_data.get("hasResource", False)
     streams = [
         {
             "resolution": f"{s.get('resolutions')}p",
@@ -577,18 +595,18 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
             "duration": s.get("duration"),
             "codec": s.get("codecName")
         }
-        for s in data.get("streams", [])
+        for s in best_data.get("streams", [])
     ]
     return {
         "subject_id": subject_id,
-        "se": se,
-        "ep": ep,
+        "se": matched_se,
+        "ep": matched_ep,
         "has_resource": has_resource,
         "sources": streams,
-        "hls": data.get("hls", []),
-        "dash": data.get("dash", []),
-        "free_episodes": data.get("freeNum"),
-        "limited": data.get("limited", False),
+        "hls": best_data.get("hls", []),
+        "dash": best_data.get("dash", []),
+        "free_episodes": best_data.get("freeNum"),
+        "limited": best_data.get("limited", False),
         "note": None if has_resource else "No stream found for this episode."
     }
 
