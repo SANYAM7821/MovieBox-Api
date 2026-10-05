@@ -682,9 +682,18 @@ KNOWN_TITLE_ALIASES = {
     "naruto shippuden": "naruto-shippuden-english-84CHPUIQj18",
     "naruto: shippuden": "naruto-shippuden-english-84CHPUIQj18",
     "naruto shippūden": "naruto-shippuden-english-84CHPUIQj18",
+    "86": "86-english-UQCnlX7NQ51",
+    "eighty six": "86-english-UQCnlX7NQ51",
+    "eighty-six": "86-english-UQCnlX7NQ51",
+    "86 eighty six": "86-english-UQCnlX7NQ51",
+    "86 eighty-six": "86-english-UQCnlX7NQ51",
+    "86-eighty-six": "86-english-UQCnlX7NQ51",
 }
 
-JUNK_TITLE_KEYWORDS = {"gameplay", "walkthrough", "trailer", "ost", "theme", "soundtrack", "mod", "review", "reaction"}
+JUNK_TITLE_KEYWORDS = {
+    "gameplay", "walkthrough", "trailer", "ost", "theme", "soundtrack", "mod",
+    "review", "reaction", "music", "song", "lyric", "mv", "dance", "concert", "clip"
+}
 
 def _clean_title_str(t: str) -> str:
     t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
