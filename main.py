@@ -727,7 +727,7 @@ def _calculate_title_similarity(query: str, title: str) -> float:
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
     """Universal multi-query search engine with AniList title resolver, ID/slug lookup, and fuzzy matching."""
-    query_str = query.strip()
+    query_str = re.sub(r'[\?\#\!]', '', query.strip())
 
     # 0. Direct Alias Map lookup
     clean_q_key = query_str.lower().strip()
