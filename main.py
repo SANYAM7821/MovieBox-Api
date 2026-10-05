@@ -684,26 +684,14 @@ def _calculate_title_similarity(query: str, title: str) -> float:
     q_cleaned = _clean_title_str(query)
     t_cleaned = _clean_title_str(title)
 
+    if not q_cleaned or not t_cleaned:
+        return 0.0
+
     if q_cleaned == t_cleaned:
         return 1.0
 
-    q_words = set(q_cleaned.split()) - STOP_WORDS
-    t_words = set(t_cleaned.split()) - STOP_WORDS
-
-    if not q_words or not t_words:
-        return 0.0
-
-    intersection = q_words.intersection(t_words)
-    if not intersection:
-        return 0.0
-
-    # Dice similarity coefficient
-    score = (2.0 * len(intersection)) / float(len(q_words) + len(t_words))
-
-    if q_cleaned in t_cleaned or t_cleaned in q_cleaned:
-        score += 0.25
-
-    return min(score, 1.0)
+    import difflib
+    return difflib.SequenceMatcher(None, q_cleaned, t_cleaned).ratio()
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
     """Smart multi-query search engine with direct ID/slug lookup, search-suggest, and fuzzy matching."""
