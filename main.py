@@ -688,6 +688,18 @@ KNOWN_TITLE_ALIASES = {
     "86 eighty six": "86-english-UQCnlX7NQ51",
     "86 eighty-six": "86-english-UQCnlX7NQ51",
     "86-eighty-six": "86-english-UQCnlX7NQ51",
+    "danmachi": "is-it-wrong-to-try-to-pick-up-girls-in-a-dungeon-wKxXfSEsgj6",
+    "oregairu": "my-teen-romantic-comedy-snafu-CPww5yBviE7",
+    "tensura": "that-time-i-got-reincarnated-as-a-slime-EwyIkSdliZ6",
+    "re:zero": "re-zero-starting-life-in-another-world-english-ir9MhrDhRG4",
+    "re zero": "re-zero-starting-life-in-another-world-english-ir9MhrDhRG4",
+    "bocchi": "bocchi-the-rock-4w7jFPtgY75",
+    "bocchi the rock": "bocchi-the-rock-4w7jFPtgY75",
+    "mha": "my-hero-academia",
+    "aot": "attack-on-titan-c0p85b63Xl2",
+    "sao": "sword-art-online",
+    "jjk": "jujutsu-kaisen-english-KD0jSM9ot5",
+    "fmab": "fullmetal-alchemist-brotherhood"
 }
 
 JUNK_TITLE_KEYWORDS = {
