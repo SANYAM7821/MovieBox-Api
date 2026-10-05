@@ -200,6 +200,13 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
 # ═══════════════════════════════════════════════════════════════════════════
 
 KNOWN_TITLE_ALIASES = {
+    # Mushoku Tensei: Jobless Reincarnation
+    "mushoku tensei": "mushoku-tensei-jobless-reincarnation-hindi-86xBouJeif1",
+    "mushoketensei": "mushoku-tensei-jobless-reincarnation-hindi-86xBouJeif1",
+    "jobless reincarnation": "mushoku-tensei-jobless-reincarnation-hindi-86xBouJeif1",
+    "mushoku tensei: jobless reincarnation": "mushoku-tensei-jobless-reincarnation-hindi-86xBouJeif1",
+    "mushoku tensei jobless reincarnation": "mushoku-tensei-jobless-reincarnation-hindi-86xBouJeif1",
+
     # You and I Are Polar Opposites
     "you and i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
     "seihantai na kimi to boku": "you-and-i-are-polar-opposites-k2INn0hIz07",
