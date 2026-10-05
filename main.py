@@ -675,6 +675,12 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
 
 STOP_WORDS = {'you', 'and', 'i', 'are', 'the', 'a', 'an', 'in', 'on', 'of', 'to', 'for', 'is', 'it', 'by', 'with', 'no'}
 
+KNOWN_TITLE_ALIASES = {
+    "you and i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
+    "seihantai na kimi to boku": "you-and-i-are-polar-opposites-k2INn0hIz07",
+    "you & i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
+}
+
 def _clean_title_str(t: str) -> str:
     t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
     t = re.sub(r'[^a-zA-Z0-9\s]', ' ', t)
@@ -694,8 +700,20 @@ def _calculate_title_similarity(query: str, title: str) -> float:
     return difflib.SequenceMatcher(None, q_cleaned, t_cleaned).ratio()
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
-    """Smart multi-query search engine with direct ID/slug lookup, search-suggest, and fuzzy matching."""
+    """Smart multi-query search engine with direct ID/slug lookup, alias mapping, search-suggest, and fuzzy matching."""
     query_str = query.strip()
+
+    # 0. Direct Alias Map lookup
+    clean_q_key = query_str.lower().strip()
+    if clean_q_key in KNOWN_TITLE_ALIASES:
+        target_slug = KNOWN_TITLE_ALIASES[clean_q_key]
+        try:
+            detail_res = await _make_request(f"{API_BASE}/detail?detailPath={target_slug}")
+            sub = detail_res.get("data", {}).get("subject", {})
+            if sub and sub.get("subjectId"):
+                return sub
+        except Exception:
+            pass
 
     # 1. Direct Subject ID lookup (e.g. 5882893381772234088)
     if query_str.isdigit():
