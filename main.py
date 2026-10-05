@@ -688,7 +688,7 @@ KNOWN_TITLE_ALIASES = {
     "86 eighty six": "86-english-UQCnlX7NQ51",
     "86 eighty-six": "86-english-UQCnlX7NQ51",
     "86-eighty-six": "86-english-UQCnlX7NQ51",
-    "danmachi": "is-it-wrong-to-try-to-pick-up-girls-in-a-dungeon-wKxXfSEsgj6",
+    "danmachi": "is-it-wrong-to-try-to-pick-up-girls-in-a-dungeon-english-q7JzbYHFGv1",
     "oregairu": "my-teen-romantic-comedy-snafu-CPww5yBviE7",
     "tensura": "that-time-i-got-reincarnated-as-a-slime-EwyIkSdliZ6",
     "re:zero": "re-zero-starting-life-in-another-world-english-ir9MhrDhRG4",
