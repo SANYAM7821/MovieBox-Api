@@ -600,6 +600,8 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
             w = item.get("word") or (item.get("subject") or {}).get("title")
             if w and w not in queries_to_try:
                 queries_to_try.append(w)
+                if w.lower() not in [a.lower() for a in search_aliases]:
+                    search_aliases.append(w)
     except Exception:
         pass
 
