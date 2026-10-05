@@ -1059,7 +1059,8 @@ async def get_anime_download_link(
         for d in official_dubs:
             lan_name = (d.get("lanName") or "").lower()
             lan_code = (d.get("lanCode") or "").lower()
-            if target_audio in lan_name or target_audio in lan_code:
+            is_orig = d.get("original", False) or "original" in lan_name or lan_code == "ja"
+            if (target_audio in ["japanese", "ja", "original"] and is_orig) or (target_audio in lan_name or target_audio in lan_code):
                 selected_dub = d
                 break
         if not selected_dub:
@@ -1180,7 +1181,8 @@ async def get_anime_batch_download_links(
         for d in official_dubs:
             lan_name = (d.get("lanName") or "").lower()
             lan_code = (d.get("lanCode") or "").lower()
-            if target_audio in lan_name or target_audio in lan_code:
+            is_orig = d.get("original", False) or "original" in lan_name or lan_code == "ja"
+            if (target_audio in ["japanese", "ja", "original"] and is_orig) or (target_audio in lan_name or target_audio in lan_code):
                 selected_dub = d
                 break
         if not selected_dub:
