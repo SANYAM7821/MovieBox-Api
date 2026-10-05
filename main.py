@@ -3,6 +3,7 @@ import re
 import json
 import time
 import httpx
+import difflib
 import asyncio
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query
@@ -11,8 +12,8 @@ from fastapi.responses import HTMLResponse
 
 app = FastAPI(
     title="MovieBox API Pro",
-    description="Full Pure REST API for moviebox.ph — Zero Scraping with Intelligent Anime Arc & Multi-Season Resolver",
-    version="2.5.0"
+    description="Full Pure REST API for moviebox.ph — Zero Scraping with Intelligent Anime Arc, Cour & Multi-Season Resolver",
+    version="2.6.0"
 )
 
 app.add_middleware(
@@ -99,7 +100,6 @@ DEFAULT_HEADERS = {
     "sec-fetch-site": "cross-site",
 }
 
-# Player-side headers for the stream domain (netfilm.world)
 PLAYER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
     "Accept": "application/json",
@@ -157,7 +157,6 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
     }
     client = get_httpx_client()
 
-    # Try primary URL
     try:
         if method == "POST":
             resp = await client.post(url, headers=headers, json=payload)
@@ -177,7 +176,6 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
     except Exception:
         pass
 
-    # Domain Fallback: Try netfilm.world player backend if primary host fails
     try:
         domain = _CACHED_DOMAIN or "https://netfilm.world"
         if API_BASE in url:
@@ -264,37 +262,43 @@ KNOWN_TITLE_ALIASES = {
 
 ANIME_ARC_SEASON_MAP = [
     # Demon Slayer (Kimetsu no Yaiba)
-    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:hashira\s*training|hashira\s*geiko)", 5),
-    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:swordsmith\s*village|katanakaji\s*no\s*sato)", 4),
-    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:entertainment\s*district|yuukaku)", 3),
-    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:mugen\s*train|mugen\s*ressha)", 2),
+    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:hashira\s*training|hashira\s*geiko)", 5, 0),
+    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:swordsmith\s*village|katanakaji\s*no\s*sato)", 4, 0),
+    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:entertainment\s*district|yuukaku)", 3, 7),
+    (r"(?:demon\s*slayer|kimetsu\s*no\s*yaiba).*(?:mugen\s*train|mugen\s*ressha)", 2, 0),
     
     # Jujutsu Kaisen
-    (r"jujutsu\s*kaisen.*(?:culling\s*game|shimetsu\s*kaiyuu)", 3),
-    (r"jujutsu\s*kaisen.*(?:shibuya\s*incident|hidden\s*inventory|kaigyoku|gyokusetsu)", 2),
+    (r"jujutsu\s*kaisen.*(?:culling\s*game|shimetsu\s*kaiyuu)", 3, 0),
+    (r"jujutsu\s*kaisen.*(?:shibuya\s*incident|hidden\s*inventory|kaigyoku|gyokusetsu)", 2, 0),
     
     # Dr. Stone
-    (r"dr\.?\s*stone.*(?:science\s*future)", 4),
-    (r"dr\.?\s*stone.*(?:new\s*world)", 3),
-    (r"dr\.?\s*stone.*(?:stone\s*wars)", 2),
+    (r"dr\.?\s*stone.*(?:science\s*future)", 4, 0),
+    (r"dr\.?\s*stone.*(?:new\s*world).*(?:part\s*2|cour\s*2|2nd\s*cour)", 3, 11),
+    (r"dr\.?\s*stone.*(?:new\s*world)", 3, 0),
+    (r"dr\.?\s*stone.*(?:stone\s*wars)", 2, 0),
     
     # Bleach Thousand-Year Blood War
-    (r"bleach.*(?:thousand|sennen).*(?:conflict|soukoku|part\s*3|cour\s*3)", 3),
-    (r"bleach.*(?:thousand|sennen).*(?:separation|ketsubetsu|part\s*2|cour\s*2)", 2),
-    (r"bleach.*(?:thousand|sennen).*(?:blood\s*war|sennen\s*kessen|part\s*1|cour\s*1)", 1),
+    (r"bleach.*(?:thousand|sennen).*(?:conflict|soukoku|part\s*3|cour\s*3)", 3, 0),
+    (r"bleach.*(?:thousand|sennen).*(?:separation|ketsubetsu|part\s*2|cour\s*2)", 2, 0),
+    (r"bleach.*(?:thousand|sennen).*(?:blood\s*war|sennen\s*kessen|part\s*1|cour\s*1)", 1, 0),
     
     # Attack on Titan
-    (r"attack\s*on\s*titan.*(?:final\s*season|season\s*4).*(?:part\s*2|the\s*final\s*chapters)", 5),
-    (r"attack\s*on\s*titan.*(?:final\s*season|season\s*4|part\s*1)", 4),
+    (r"attack\s*on\s*titan.*(?:final\s*season|season\s*4).*(?:part\s*2|the\s*final\s*chapters)", 5, 16),
+    (r"attack\s*on\s*titan.*(?:final\s*season|season\s*4|part\s*1)", 4, 0),
     
-    # Sword Art Online
-    (r"sword\s*art\s*online.*(?:war\s*of\s*underworld)", 4),
-    (r"sword\s*art\s*online.*(?:alicization)", 3),
+    # Mushoku Tensei
+    (r"mushoku\s*tensei.*(?:season\s*2|2nd\s*season|ii).*(?:part\s*2|cour\s*2|2nd\s*cour)", 2, 12),
+    (r"mushoku\s*tensei.*(?:season\s*2|2nd\s*season|ii)", 2, 0),
+    (r"mushoku\s*tensei.*(?:part\s*2|cour\s*2|2nd\s*cour)", 1, 11),
     
-    # Tokyo Ghoul
-    (r"tokyo\s*ghoul.*(?::re|re).*(?:2nd|season\s*2|part\s*2|cour\s*2)", 4),
-    (r"tokyo\s*ghoul.*(?::re|re)", 3),
-    (r"tokyo\s*ghoul.*(?:root\s*a)", 2),
+    # Spy x Family
+    (r"spy\s*x\s*family.*(?:part\s*2|cour\s*2|2nd\s*cour)", 1, 12),
+    
+    # Slime
+    (r"(?:slime|ten-sei|tensei\s*shitara\s*slime).*(?:season\s*2|2nd\s*season).*(?:part\s*2|cour\s*2)", 2, 12),
+    
+    # Re:Zero
+    (r"re:?zero.*(?:season\s*2|2nd\s*season).*(?:part\s*2|cour\s*2)", 2, 13),
 ]
 
 JUNK_TITLE_KEYWORDS = {
@@ -302,44 +306,35 @@ JUNK_TITLE_KEYWORDS = {
     "review", "reaction", "music", "song", "lyric", "mv", "dance", "concert", "clip"
 }
 
-def extract_season_from_title(title: str, default_se: int = 1) -> int:
-    """Intelligently detects the intended anime season number from title text or arc names."""
-    t_clean = title.lower().strip()
-    
-    # 1. Check explicit arc patterns
-    for pattern, season_num in ANIME_ARC_SEASON_MAP:
-        if re.search(pattern, t_clean):
-            return season_num
-            
-    # 2. Check explicit season words: "Season 7", "7th Season", "S7"
-    s_match = re.search(r'\bseason\s*(\d+)\b', t_clean)
-    if s_match:
-        return int(s_match.group(1))
-        
-    th_match = re.search(r'\b(\d+)(?:st|nd|rd|th)\s*season\b', t_clean)
-    if th_match:
-        return int(th_match.group(1))
-        
-    s_num_match = re.search(r'\bs(\d+)\b', t_clean)
-    if s_num_match:
-        return int(s_num_match.group(1))
-        
-    # Roman numerals: "Season IV", "Mob Psycho 100 III", "Mushoku Tensei II", "Part III"
-    if re.search(r'\b(?:season|part)?\s*vii\b', t_clean) or re.search(r'\bvii$', t_clean): return 7
-    if re.search(r'\b(?:season|part)?\s*vi\b', t_clean) or re.search(r'\bvi$', t_clean): return 6
-    if re.search(r'\b(?:season|part)?\s*v\b', t_clean) or re.search(r'\bv$', t_clean): return 5
-    if re.search(r'\b(?:season|part)?\s*iv\b', t_clean) or re.search(r'\biv$', t_clean): return 4
-    if re.search(r'\b(?:season|part)?\s*iii\b', t_clean) or re.search(r'\biii$', t_clean): return 3
-    if re.search(r'\b(?:season|part)?\s*ii\b', t_clean) or re.search(r'\bii$', t_clean): return 2
-    
-    # Trailing digits: e.g. "KonoSuba 3", "KonoSuba! 3"
-    trailing_num = re.search(r'[\!\?\:\s]+(\d+)\s*$', t_clean)
-    if trailing_num:
-        val = int(trailing_num.group(1))
-        if 2 <= val <= 20:
-            return val
+STOP_WORDS = {
+    'the', 'a', 'an', 'in', 'on', 'of', 'to', 'for', 'is', 'it', 'by', 'with', 'no',
+    'and', 's', 'season', 'arc', 'part', 'hen', 'act', 'cour'
+}
 
-    return default_se
+def _clean_title_tokens(t: str) -> set[str]:
+    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
+    t = re.sub(r'[^a-zA-Z0-9\s]', ' ', t)
+    words = t.lower().split()
+    return {w for w in words if w not in STOP_WORDS and len(w) > 1}
+
+def _calculate_title_similarity(query: str, title: str) -> float:
+    q_words = _clean_title_tokens(query)
+    t_words = _clean_title_tokens(title)
+
+    if not q_words or not t_words:
+        return 0.0
+
+    intersection = q_words.intersection(t_words)
+    if not intersection:
+        return 0.0
+
+    query_coverage = len(intersection) / len(q_words)
+    
+    q_str = ' '.join(sorted(list(q_words)))
+    t_str = ' '.join(sorted(list(t_words)))
+    seq_ratio = difflib.SequenceMatcher(None, q_str, t_str).ratio()
+
+    return (query_coverage * 0.7) + (seq_ratio * 0.3)
 
 def extract_base_franchise_title(title: str) -> str:
     """Strips arc names, season suffixes, cour designations to get the base franchise title for searching."""
@@ -379,76 +374,93 @@ def resolve_effective_se_and_ep(
     subject_type: int = 2
 ) -> tuple[int, int]:
     """
-    Given a query title, user requested (se, ep), and the MovieBox subject's available seasons structure,
-    maps to the exact (se, ep) that exists in MovieBox.
+    Intelligently maps query title and episode request to the exact (se, ep) in MovieBox,
+    handling split-cours, arc spillover, and multi-part releases.
     """
     if subject_type == 1 or not available_seasons:
         return (0, 0)
-        
-    title_se = extract_season_from_title(query_title, default_se=requested_se)
-    target_se = requested_se if (requested_se > 1 and title_se == 1) else title_se
-    
+
+    t_clean = query_title.lower().strip()
     se_map = {s.get("se"): s.get("maxEp", 0) for s in available_seasons if s.get("se") is not None}
     valid_se_nums = sorted(list(se_map.keys()))
-    
+
     if not valid_se_nums:
-        return (target_se, requested_ep)
-        
-    # Case 1: Exact season exists in MovieBox
+        return (requested_se, requested_ep)
+
+    # 1. Check explicit arc & multi-part cour patterns
+    for pattern, target_season, part_offset in ANIME_ARC_SEASON_MAP:
+        if re.search(pattern, t_clean):
+            # Special case for Demon Slayer Entertainment District:
+            if "entertainment district" in t_clean or "yuukaku" in t_clean:
+                s2_max = se_map.get(2, 0)
+                s3_max = se_map.get(3, 0)
+                if s2_max >= 18:
+                    # Combined Season 2 (Mugen Train 1-7, Entertainment District 8-18)
+                    return (2, requested_ep + 7)
+                elif s3_max >= 11:
+                    # Dedicated Season 3
+                    return (3, requested_ep)
+
+            # Check if target_season exists in MovieBox subject
+            if target_season in se_map:
+                max_ep_in_se = se_map[target_season]
+                if part_offset > 0 and max_ep_in_se > part_offset:
+                    return (target_season, requested_ep + part_offset)
+                return (target_season, requested_ep)
+            else:
+                if len(valid_se_nums) == 1:
+                    return (valid_se_nums[0], requested_ep)
+
+    # 2. General Season Extraction
+    detected_se = requested_se
+    s_match = re.search(r'\bseason\s*(\d+)\b', t_clean) or re.search(r'\b(\d+)(?:st|nd|rd|th)\s*season\b', t_clean) or re.search(r'\bs(\d+)\b', t_clean)
+    if s_match:
+        detected_se = int(s_match.group(1))
+    elif re.search(r'\b(?:season|part)?\s*vii\b', t_clean): detected_se = 7
+    elif re.search(r'\b(?:season|part)?\s*vi\b', t_clean): detected_se = 6
+    elif re.search(r'\b(?:season|part)?\s*v\b', t_clean): detected_se = 5
+    elif re.search(r'\b(?:season|part)?\s*iv\b', t_clean): detected_se = 4
+    elif re.search(r'\b(?:season|part)?\s*iii\b', t_clean): detected_se = 3
+    elif re.search(r'\b(?:season|part)?\s*ii\b', t_clean): detected_se = 2
+
+    target_se = requested_se if (requested_se > 1 and detected_se == 1) else detected_se
+
+    # 3. Check for Part 2 / Cour 2 in title
+    is_part_2 = bool(re.search(r'\b(?:part|cour)\s*2\b|\b2nd\s*(?:part|cour)\b|\bpart\s*ii\b', t_clean))
+
     if target_se in se_map:
-        max_ep_for_se = se_map[target_se]
-        # Handle cumulative episode numbers (e.g. Demon Slayer Ep 34 -> S3 E1)
-        if target_se == 1 and requested_ep > max_ep_for_se and len(valid_se_nums) > 1:
+        max_ep = se_map[target_se]
+        
+        # Check if requested_ep exceeds max_ep (e.g. S2 Ep 8 on a 7-ep Season 2)
+        if requested_ep > max_ep and len(valid_se_nums) > 1:
             cum_ep = requested_ep
             for s_num in valid_se_nums:
                 m_ep = se_map[s_num]
-                if cum_ep <= m_ep:
-                    return (s_num, cum_ep)
-                cum_ep -= m_ep
+                if s_num >= target_se:
+                    if cum_ep <= m_ep:
+                        return (s_num, cum_ep)
+                    cum_ep -= m_ep
             return (valid_se_nums[-1], cum_ep)
+            
+        # If title specifically says Part 2 and season has > 18 eps:
+        if is_part_2 and max_ep >= 20 and requested_ep <= 13:
+            return (target_se, requested_ep + 12)
+
         return (target_se, requested_ep)
-        
-    # Case 2: Target season is 1, but subject seasons start at > 1 (e.g. Tokyo Ghoul :re starts at S3)
+
     min_se = min(valid_se_nums)
     if target_se == 1 and min_se > 1:
         return (min_se, requested_ep)
-        
-    # Case 3: Subject has only 1 season
+
     if len(valid_se_nums) == 1:
         return (valid_se_nums[0], requested_ep)
-        
-    # Case 4: Target season > max season in subject
+
     max_se = max(valid_se_nums)
     if target_se > max_se:
         return (max_se, requested_ep)
-        
-    # Fallback: nearest available season
+
     nearest_se = min(valid_se_nums, key=lambda x: abs(x - target_se))
     return (nearest_se, requested_ep)
-
-def _clean_title_str(t: str) -> str:
-    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
-    t = re.sub(r'[^a-zA-Z0-9\s]', ' ', t)
-    return ' '.join(t.lower().split())
-
-def _calculate_title_similarity(query: str, title: str) -> float:
-    q_cleaned = _clean_title_str(query)
-    t_cleaned = _clean_title_str(title)
-
-    if not q_cleaned or not t_cleaned:
-        return 0.0
-
-    if q_cleaned == t_cleaned:
-        return 1.0
-
-    import difflib
-    score = difflib.SequenceMatcher(None, q_cleaned, t_cleaned).ratio()
-
-    # Substring containment bonus
-    if q_cleaned in t_cleaned or t_cleaned in q_cleaned:
-        score = max(score, 0.85)
-
-    return min(score, 1.0)
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
     """Universal multi-query search engine with AniList title resolver, ID/slug lookup, and intelligent matching."""
@@ -577,7 +589,6 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                 if not name or not dpath:
                     continue
 
-                # Reject gameplay, trailers, music videos
                 if any(j in name.lower() for j in JUNK_TITLE_KEYWORDS):
                     continue
 
@@ -598,7 +609,6 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                     if not is_anime:
                         continue
 
-                # Calculate score against all valid aliases and base titles
                 s_score = max([_calculate_title_similarity(al, name) for al in search_aliases])
                 if s_score > best_score:
                     best_score = s_score
@@ -609,7 +619,7 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    if (not best_match or best_score < 0.25) and last_raw and not anime_only:
+    if (not best_match or best_score < 0.4) and last_raw and not anime_only:
         best_match = last_raw[0].get("subject") or last_raw[0]
 
     if not best_match:
@@ -664,7 +674,7 @@ async def dashboard():
     <body>
         <div class="container">
             <header>
-                <h1>MovieBox Pro API v2.5</h1>
+                <h1>MovieBox Pro API v2.6</h1>
                 <p style="color: #889;">Pure REST API with Intelligent Multi-Season & Arc Resolver</p>
             </header>
             <div class="grid">
@@ -830,7 +840,7 @@ async def get_stream_all_languages(
     ep: int = Query(1, description="Episode number"),
     dubs_only: bool = Query(True, description="Filter for audio dubs only and exclude subtitle-only tracks")
 ):
-    cache_key = f"stream_all_langs_v2:{title.strip().lower()}:s{se}:e{ep}:dubs{dubs_only}"
+    cache_key = f"stream_all_langs_v3:{title.strip().lower()}:s{se}:e{ep}:dubs{dubs_only}"
     cached = await get_cached_response(cache_key)
     if cached:
         return cached
@@ -959,7 +969,7 @@ async def get_anime_batch_download_links(
     if not parsed_episodes:
         raise HTTPException(status_code=400, detail="Invalid episodes format. Use format like '1,3,7,13' or '1-5'")
 
-    cache_key = f"anime_batch_v2:{title.strip().lower()}:s{se}:eps{','.join(map(str, parsed_episodes))}:a{audio.strip().lower()}:q{quality.strip().lower()}"
+    cache_key = f"anime_batch_v3:{title.strip().lower()}:s{se}:eps{','.join(map(str, parsed_episodes))}:a{audio.strip().lower()}:q{quality.strip().lower()}"
     cached = await get_cached_response(cache_key)
     if cached:
         return cached
@@ -1083,7 +1093,7 @@ async def get_anime_download_link(
     quality: str = Query("1080p", description="Video quality preference (e.g. 1080p, 720p, 480p, 360p)"),
     nocache: bool = Query(False, description="Bypass cache and force fresh lookup")
 ):
-    cache_key = f"anime_download_v2:{title.strip().lower()}:s{se}:e{ep}:a{audio.strip().lower()}:q{quality.strip().lower()}"
+    cache_key = f"anime_download_v3:{title.strip().lower()}:s{se}:e{ep}:a{audio.strip().lower()}:q{quality.strip().lower()}"
     if not nocache:
         cached = await get_cached_response(cache_key)
         if cached:
@@ -1187,7 +1197,7 @@ async def get_stream_by_name(
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number")
 ):
-    cache_key = f"stream_by_name_v2:{title.strip().lower()}:s{se}:e{ep}"
+    cache_key = f"stream_by_name_v3:{title.strip().lower()}:s{se}:e{ep}"
     cached = await get_cached_response(cache_key)
     if cached:
         return cached
@@ -1239,7 +1249,7 @@ async def get_captions_by_name(
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number")
 ):
-    cache_key = f"captions_by_name_v2:{title.strip().lower()}:s{se}:e{ep}"
+    cache_key = f"captions_by_name_v3:{title.strip().lower()}:s{se}:e{ep}"
     cached = await get_cached_response(cache_key)
     if cached:
         return cached
