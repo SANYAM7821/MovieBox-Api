@@ -630,6 +630,82 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
     captions = inner.get("captions", []) if isinstance(inner, dict) else inner
     return {"subject_id": subject_id, "se": se, "ep": ep, "count": len(captions), "captions": captions}
 
+STOP_WORDS = {'you', 'and', 'i', 'are', 'the', 'a', 'an', 'in', 'on', 'of', 'to', 'for', 'is', 'it', 'by', 'with', 'no'}
+
+def _clean_title_str(t: str) -> str:
+    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
+    t = re.sub(r'[^a-zA-Z0-9\s]', ' ', t)
+    return ' '.join(t.lower().split())
+
+def _calculate_title_similarity(query: str, title: str) -> float:
+    q_cleaned = _clean_title_str(query)
+    t_cleaned = _clean_title_str(title)
+
+    if q_cleaned == t_cleaned:
+        return 1.0
+
+    q_words = set(q_cleaned.split()) - STOP_WORDS
+    t_words = set(t_cleaned.split()) - STOP_WORDS
+
+    if not q_words or not t_words:
+        return 1.0 if q_cleaned in t_cleaned or t_cleaned in q_cleaned else 0.0
+
+    intersection = q_words.intersection(t_words)
+    score = len(intersection) / float(len(q_words))
+
+    if q_cleaned in t_cleaned or t_cleaned in q_cleaned:
+        score += 0.3
+
+    return min(score, 1.0)
+
+async def _smart_search_title(query: str) -> dict:
+    """Smart multi-query search engine with fuzzy matching and stop-word fallback."""
+    queries_to_try = [query.strip()]
+
+    # Fallback query without stop words
+    words = [w for w in re.sub(r'[^a-zA-Z0-9\s]', ' ', query).split() if w.lower() not in STOP_WORDS]
+    if len(words) >= 1:
+        clean_fallback = ' '.join(words)
+        if clean_fallback != query.strip() and clean_fallback not in queries_to_try:
+            queries_to_try.append(clean_fallback)
+
+    best_match = None
+    best_score = -1.0
+    last_raw = []
+
+    search_url = f"{API_BASE}/subject/search"
+
+    for q_term in queries_to_try:
+        try:
+            search_res = await _make_request(search_url, method="POST", payload={"keyword": q_term, "page": 1, "perPage": 20})
+            inner = search_res.get("data", {})
+            raw = inner.get("items", inner.get("list", []))
+            if raw:
+                last_raw = raw
+
+            for item in raw:
+                sub = item.get("subject") or item
+                name = str(sub.get("title") or item.get("title") or "")
+                if not name:
+                    continue
+                score = _calculate_title_similarity(query, name)
+                if score > best_score:
+                    best_score = score
+                    best_match = sub
+
+            if best_score >= 0.7:
+                break
+        except Exception:
+            pass
+
+    if (not best_match or best_score < 0.2) and last_raw:
+        best_match = last_raw[0].get("subject") or last_raw[0]
+
+    if not best_match:
+        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{query}'")
+
+    return best_match
+
 @app.get("/api/captions-by-name")
 async def get_captions_by_name(
     title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Naruto, Demon Slayer)"),
@@ -641,19 +717,10 @@ async def get_captions_by_name(
     if cached:
         return cached
 
-    search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
-    inner = search_res.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-
-    if not raw:
-        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
-
-    top_match = raw[0]
-    sub = top_match.get("subject") or top_match
+    sub = await _smart_search_title(title)
     subject_id = str(sub.get("subjectId"))
     detail_path = str(sub.get("detailPath"))
-    matched_title = sub.get("title") or top_match.get("title") or title
+    matched_title = sub.get("title") or title
 
     captions_res = await get_captions(subject_id=subject_id, detail_path=detail_path, se=se, ep=ep)
 
@@ -681,22 +748,11 @@ async def get_stream_by_name(
     if cached:
         return cached
 
-    # Step 1: Search for the title
-    search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
-    inner = search_res.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-
-    if not raw:
-        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
-
-    top_match = raw[0]
-    sub = top_match.get("subject") or top_match
+    sub = await _smart_search_title(title)
     subject_id = str(sub.get("subjectId"))
     detail_path = str(sub.get("detailPath"))
-    matched_title = sub.get("title") or top_match.get("title") or title
+    matched_title = sub.get("title") or title
 
-    # Step 2: Fetch stream resources directly
     stream_res = await get_stream_sources(subject_id=subject_id, detail_path=detail_path, se=se, ep=ep)
 
     res_data = {
@@ -729,17 +785,8 @@ async def get_stream_all_languages(
     if cached:
         return cached
 
-    # Step 1: Search for top match
-    search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
-    inner = search_res.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-
-    if not raw:
-        raise HTTPException(status_code=404, detail=f"No movie, series, or anime found matching title '{title}'")
-
-    top_match = raw[0]
-    sub = top_match.get("subject") or top_match
+    # Step 1: Smart search for top match
+    sub = await _smart_search_title(title)
     detail_path = str(sub.get("detailPath"))
 
     # Step 2: Query MovieBox official detail endpoint to extract official 'dubs' array
@@ -757,7 +804,6 @@ async def get_stream_all_languages(
             dpath = str(d.get("detailPath"))
             d_type = d.get("type", 0)  # 0 = Audio Dub, 1 = Subtitle track
 
-            # Filter out subtitle-only items if dubs_only is True
             if dubs_only and d_type == 1:
                 continue
 
@@ -829,17 +875,8 @@ async def get_anime_download_link(
     if cached:
         return cached
 
-    # Step 1: Search for top match
-    search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
-    inner = search_res.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-
-    if not raw:
-        raise HTTPException(status_code=404, detail=f"No anime or title found matching '{title}'")
-
-    top_match = raw[0]
-    sub = top_match.get("subject") or top_match
+    # Step 1: Smart search for top match
+    sub = await _smart_search_title(title)
     detail_path = str(sub.get("detailPath"))
 
     # Step 2: Query MovieBox official detail endpoint for official 'dubs' list
@@ -959,17 +996,8 @@ async def get_anime_batch_download_links(
     if cached:
         return cached
 
-    # Step 1: Search for top match
-    search_url = f"{API_BASE}/subject/search"
-    search_res = await _make_request(search_url, method="POST", payload={"keyword": title, "page": 1, "perPage": 10})
-    inner = search_res.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-
-    if not raw:
-        raise HTTPException(status_code=404, detail=f"No anime or title found matching '{title}'")
-
-    top_match = raw[0]
-    sub = top_match.get("subject") or top_match
+    # Step 1: Smart search for top match
+    sub = await _smart_search_title(title)
     detail_path = str(sub.get("detailPath"))
 
     # Step 2: Query MovieBox official detail endpoint for official 'dubs' list
