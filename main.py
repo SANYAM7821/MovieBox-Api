@@ -1036,12 +1036,14 @@ async def get_anime_download_link(
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number"),
     audio: str = Query("Japanese", description="Audio language preference (e.g. Hindi, English, Japanese, Tamil)"),
-    quality: str = Query("1080p", description="Video quality preference (e.g. 1080p, 720p, 480p, 360p)")
+    quality: str = Query("1080p", description="Video quality preference (e.g. 1080p, 720p, 480p, 360p)"),
+    nocache: bool = Query(False, description="Bypass cache and force fresh lookup")
 ):
     cache_key = f"anime_download:{title.strip().lower()}:s{se}:e{ep}:a{audio.strip().lower()}:q{quality.strip().lower()}"
-    cached = await get_cached_response(cache_key)
-    if cached:
-        return cached
+    if not nocache:
+        cached = await get_cached_response(cache_key)
+        if cached:
+            return cached
 
     # Step 1: Smart search with anime_only filter
     sub = await _smart_search_title(title, anime_only=True)
