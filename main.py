@@ -663,6 +663,9 @@ KNOWN_TITLE_ALIASES = {
     "you and i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
     "seihantai na kimi to boku": "you-and-i-are-polar-opposites-k2INn0hIz07",
     "you & i are polar opposites": "you-and-i-are-polar-opposites-k2INn0hIz07",
+    "demon slayer": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
+    "demon slayer: kimetsu no yaiba": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
+    "kimetsu no yaiba": "demon-slayer-kimetsu-no-yaiba-OpOlWPwnoj4",
     "naruto shippuden": "naruto-shippuden-english-84CHPUIQj18",
     "naruto: shippuden": "naruto-shippuden-english-84CHPUIQj18",
     "naruto shippūden": "naruto-shippuden-english-84CHPUIQj18",
@@ -709,7 +712,13 @@ def _calculate_title_similarity(query: str, title: str) -> float:
         return 1.0
 
     import difflib
-    return difflib.SequenceMatcher(None, q_cleaned, t_cleaned).ratio()
+    score = difflib.SequenceMatcher(None, q_cleaned, t_cleaned).ratio()
+
+    # Preference bonus for full multi-season series entries (e.g. S1-S5)
+    if re.search(r'\bs1-\s*\d+', title, re.IGNORECASE) or re.search(r'\bs\d+-\s*s?\d+', title, re.IGNORECASE):
+        score += 0.2
+
+    return min(score, 1.0)
 
 async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
     """Universal multi-query search engine with AniList title resolver, ID/slug lookup, and fuzzy matching."""
