@@ -761,8 +761,12 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
     search_aliases = [query_str]
     try:
         anilist_q = """query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } } }"""
-        async with httpx.AsyncClient(timeout=3.0) as al_client:
-            al_resp = await al_client.post("https://graphql.anilist.co", json={"query": anilist_q, "variables": {"search": query_str}})
+        async with httpx.AsyncClient(timeout=4.0) as al_client:
+            al_resp = await al_client.post(
+                "https://graphql.anilist.co",
+                json={"query": anilist_q, "variables": {"search": query_str}},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Content-Type": "application/json"}
+            )
             if al_resp.status_code == 200:
                 al_media = al_resp.json().get("data", {}).get("Media", {})
                 if al_media:
