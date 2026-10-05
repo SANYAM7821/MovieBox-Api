@@ -619,10 +619,7 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
         except Exception:
             pass
 
-    if (not best_match or best_score < 0.4) and last_raw and not anime_only:
-        best_match = last_raw[0].get("subject") or last_raw[0]
-
-    if not best_match:
+    if not best_match or best_score < 0.4:
         error_msg = f"No anime title found matching '{query_str}' in catalog" if anime_only else f"No movie, series, or anime found matching title '{query_str}'"
         raise HTTPException(status_code=404, detail=error_msg)
 
