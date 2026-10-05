@@ -889,9 +889,12 @@ async def get_stream_all_languages(
     title: str = Query(..., min_length=1, description="Anime or movie/show title (e.g. Demon Slayer, Naruto)"),
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number"),
+    absolute_ep: int | None = Query(None, description="Explicit absolute episode number across all cours"),
+    ep_offset: int | None = Query(None, description="Explicit episode offset to add"),
     dubs_only: bool = Query(True, description="Filter for audio dubs only and exclude subtitle-only tracks")
 ):
-    cache_key = f"stream_all_langs_v4:{title.strip().lower()}:s{se}:e{ep}:dubs{dubs_only}"
+    target_ep = absolute_ep if absolute_ep is not None else (ep + ep_offset if ep_offset is not None else ep)
+    cache_key = f"stream_all_langs_v5:{title.strip().lower()}:s{se}:e{target_ep}:dubs{dubs_only}"
     cached = await get_cached_response(cache_key)
     if cached:
         return cached
@@ -912,7 +915,7 @@ async def get_stream_all_languages(
     eff_se, eff_ep = resolve_effective_se_and_ep(
         query_title=title,
         requested_se=se,
-        requested_ep=ep,
+        requested_ep=target_ep,
         available_seasons=available_seasons,
         subject_type=subject_type
     )
@@ -1155,11 +1158,14 @@ async def get_anime_download_link(
     title: str = Query(..., min_length=1, description="Anime title (e.g. Demon Slayer, Naruto)"),
     se: int = Query(1, description="Season number"),
     ep: int = Query(1, description="Episode number"),
+    absolute_ep: int | None = Query(None, description="Explicit absolute episode number across all cours"),
+    ep_offset: int | None = Query(None, description="Explicit episode offset to add"),
     audio: str = Query("Japanese", description="Audio language preference (e.g. Hindi, English, Japanese, Tamil)"),
     quality: str = Query("1080p", description="Video quality preference (e.g. 1080p, 720p, 480p, 360p)"),
     nocache: bool = Query(False, description="Bypass cache and force fresh lookup")
 ):
-    cache_key = f"anime_download_v3:{title.strip().lower()}:s{se}:e{ep}:a{audio.strip().lower()}:q{quality.strip().lower()}"
+    target_ep = absolute_ep if absolute_ep is not None else (ep + ep_offset if ep_offset is not None else ep)
+    cache_key = f"anime_download_v4:{title.strip().lower()}:s{se}:e{target_ep}:a{audio.strip().lower()}:q{quality.strip().lower()}"
     if not nocache:
         cached = await get_cached_response(cache_key)
         if cached:
@@ -1178,7 +1184,7 @@ async def get_anime_download_link(
     eff_se, eff_ep = resolve_effective_se_and_ep(
         query_title=title,
         requested_se=se,
-        requested_ep=ep,
+        requested_ep=target_ep,
         available_seasons=available_seasons,
         subject_type=subject_type
     )
