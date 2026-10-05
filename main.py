@@ -153,6 +153,8 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
         **(custom_headers or {})
     }
     client = get_httpx_client()
+
+    # Try primary URL
     try:
         if method == "POST":
             resp = await client.post(url, headers=headers, json=payload)
@@ -165,13 +167,33 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
             if new_token:
                 _bearer_token = new_token
 
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Upstream API error: {resp.status_code}")
+        if resp.status_code == 200:
+            res_json = resp.json()
+            # Verify data code if present
+            if res_json.get("code") in [0, "0", 200] and res_json.get("data"):
+                return res_json
+    except Exception:
+        pass
 
-        return resp.json()
-    except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=502, detail=f"Request failed: {str(e)}")
+    # Domain Fallback: Try netfilm.world player backend if primary host fails
+    try:
+        domain = _CACHED_DOMAIN or "https://netfilm.world"
+        if API_BASE in url:
+            fallback_url = url.replace(API_BASE, f"{domain}/wefeed-h5api-bff")
+            fallback_headers = {**PLAYER_HEADERS, "Referer": f"{domain}/"}
+            if method == "POST":
+                resp2 = await client.post(fallback_url, headers=fallback_headers, json=payload)
+            else:
+                resp2 = await client.get(fallback_url, headers=fallback_headers)
+
+            if resp2.status_code == 200:
+                res_json2 = resp2.json()
+                if res_json2.get("data"):
+                    return res_json2
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=502, detail="Upstream MovieBox API failed to respond")
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
