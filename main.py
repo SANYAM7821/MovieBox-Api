@@ -690,20 +690,18 @@ def _calculate_title_similarity(query: str, title: str) -> float:
     q_words = set(q_cleaned.split()) - STOP_WORDS
     t_words = set(t_cleaned.split()) - STOP_WORDS
 
-    if q_words and not t_words:
-        return 0.05
-
-    if not q_words and not t_words:
-        return 1.0 if q_cleaned in t_cleaned or t_cleaned in q_cleaned else 0.0
+    if not q_words or not t_words:
+        return 0.0
 
     intersection = q_words.intersection(t_words)
     if not intersection:
         return 0.0
 
-    score = len(intersection) / float(len(q_words))
+    # Dice similarity coefficient
+    score = (2.0 * len(intersection)) / float(len(q_words) + len(t_words))
 
     if q_cleaned in t_cleaned or t_cleaned in q_cleaned:
-        score += 0.2
+        score += 0.25
 
     return min(score, 1.0)
 
@@ -781,7 +779,6 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                 if not name or not dpath:
                     continue
 
-                # If anime_only filter is active, verify subjectType or genre
                 if anime_only:
                     stype = sub.get("subjectType")
                     genre = str(sub.get("genre") or "").lower()
@@ -804,7 +801,7 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
                     best_score = score
                     best_match = sub
 
-            if best_score >= 0.6:
+            if best_score >= 0.85:
                 break
         except Exception:
             pass
