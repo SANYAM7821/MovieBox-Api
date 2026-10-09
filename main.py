@@ -667,6 +667,7 @@ async def _smart_search_title(query: str, anime_only: bool = False) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.get("/", response_class=HTMLResponse)
+@app.head("/", response_class=HTMLResponse)
 async def dashboard():
     html_content = """
     <!DOCTYPE html>
@@ -730,7 +731,9 @@ async def dashboard():
     return HTMLResponse(content=html_content)
 
 @app.get("/health")
+@app.head("/health")
 @app.get("/api/health")
+@app.head("/api/health")
 async def health_check():
     return {
         "status": "ok",
