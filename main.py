@@ -729,6 +729,17 @@ async def dashboard():
     """
     return HTMLResponse(content=html_content)
 
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "service": "Moviebox Pro API",
+        "version": "2.6.0",
+        "timestamp": time.time(),
+        "redis_connected": _redis is not None
+    }
+
 @app.get("/home")
 async def get_home():
     url = f"{API_BASE}/home?host=moviebox.ph"
